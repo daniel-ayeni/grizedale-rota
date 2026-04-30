@@ -23,6 +23,7 @@ const RULE_DEFS = [
     { key: "preferred_off_days",     name: "Honour staff day-of-week preferences", desc: "Avoid scheduling staff on their preferred-off days." },
     { key: "avoid_pairs",            name: "Avoid pairing flagged staff",         desc: "Avoid placing 'do not pair' staff together on the same shift." },
     { key: "weekend_fairness",       name: "Fair distribution of weekends off",   desc: "Spread weekend shifts proportionally to contracted hours." },
+    { key: "overtime_prefer_flexi",  name: "Overtime preference → flexi staff",   desc: "When extra hours are needed above contracted minimums, prefer giving them to the flexi staff (default D.A.) up to a weekly cap.", hasParams: true },
 ];
 
 const MODES = [
@@ -53,6 +54,19 @@ export default function Rules() {
         setConfig((c) => ({
             ...c,
             rules: { ...c.rules, [key]: { ...c.rules[key], weight } },
+        }));
+        setDirty(true);
+    };
+    const setParam = (key, paramKey, value) => {
+        setConfig((c) => ({
+            ...c,
+            rules: {
+                ...c.rules,
+                [key]: {
+                    ...c.rules[key],
+                    params: { ...(c.rules[key]?.params || {}), [paramKey]: value },
+                },
+            },
         }));
         setDirty(true);
     };
@@ -143,6 +157,33 @@ export default function Rules() {
                                         onValueChange={(v) => setWeight(rd.key, v[0])}
                                         data-testid={`rule-${rd.key}-weight-slider`}
                                     />
+                                    {rd.hasParams && (
+                                        <div className="mt-4 grid grid-cols-2 gap-3" data-testid={`rule-${rd.key}-params`}>
+                                            <div>
+                                                <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">Preferred staff initials</label>
+                                                <input
+                                                    className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                                                    style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                                                    value={r.params?.preferred_staff_initials || ""}
+                                                    onChange={(e) => setParam(rd.key, "preferred_staff_initials", e.target.value)}
+                                                    data-testid={`rule-${rd.key}-param-staff`}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">Weekly cap (hours)</label>
+                                                <input
+                                                    type="number"
+                                                    min={0}
+                                                    max={80}
+                                                    className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                                                    style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                                                    value={r.params?.weekly_cap ?? 48}
+                                                    onChange={(e) => setParam(rd.key, "weekly_cap", Number(e.target.value))}
+                                                    data-testid={`rule-${rd.key}-param-cap`}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>

@@ -95,7 +95,7 @@
       "target_weekly_hours": 36,
       "is_admin_only": false,
       "medication_competent": true,
-      "first_aider": false,
+      "first_aider": true,
       "fire_trained": true,
       "trust_level": "medium",
       "can_do_days": true,

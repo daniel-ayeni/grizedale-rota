@@ -68,6 +68,7 @@ DEFAULT_WEIGHTS = {
     "avoid_pairs": 30,
     "weekend_fairness": 10,
     "hours_overage": 5,                  # always-on small penalty for over-target
+    "overtime_prefer_flexi": 15,         # reward (negative) for D.A. overtime
 }
 
 DEFAULT_RULE_MODES = {
@@ -80,6 +81,7 @@ DEFAULT_RULE_MODES = {
     "preferred_off_days": "soft",
     "avoid_pairs": "soft",
     "weekend_fairness": "soft",
+    "overtime_prefer_flexi": "soft",
 }
 
 
@@ -134,6 +136,7 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
 
     modes = _resolve_modes(payload.get("rules"))
     weights = _resolve_weights(payload.get("rule_weights"))
+    rule_params = payload.get("rule_params") or {}
     shift_hours = dict(DEFAULT_SHIFT_HOURS)
     shift_hours.update(payload.get("shift_hours", {}) or {})
 
@@ -298,6 +301,14 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             model.Add(x[s][di]["D*"] + x[s][di + 1]["D*"] <= 1)
 
     # Contracted hours (>= target*weeks - AL*12 - TRN*8 - 2)
+    # Plus: overtime preference for the flexi staff (default D.A.) — soft
+    # NEGATIVE coefficient (reward) for hours above target, capped by
+    # weekly_cap (UK WTR default 48h/week).
+    ot_params = rule_params.get("overtime_prefer_flexi") or {}
+    ot_preferred = ot_params.get("preferred_staff_initials", "D.A.")
+    ot_weekly_cap = int(ot_params.get("weekly_cap", 48))
+    ot_mode = modes.get("overtime_prefer_flexi", "soft")
+
     for s in staff_inits:
         info = staff_by[s]
         target_total = int(info.get("target_weekly_hours", 0)) * weeks
@@ -319,10 +330,20 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             model.Add(actual + 12 * al_var + 8 * trn_var + short >= target_total - 2)
             soft_terms.append(weights["contracted_hours_min"] * short)
 
-        # Always penalise overage softly so solver doesn't blow past the target
+        # Overage int var (always-on small penalty so solver doesn't blow past target)
         over = model.NewIntVar(0, 1000, f"hours_over_{s}")
         model.Add(actual - target_total <= over)
         soft_terms.append(weights["hours_overage"] * over)
+
+        # Overtime preference reward — only for the configured flexi staff
+        if ot_mode != "off" and s == ot_preferred:
+            cap_total = ot_weekly_cap * weeks
+            cap_overage = max(0, cap_total - target_total)
+            if cap_overage > 0:
+                bonus = model.NewIntVar(0, cap_overage, f"ot_bonus_{s}")
+                model.Add(bonus <= over)
+                # Negative coefficient = reward (lowers objective)
+                soft_terms.append(-weights["overtime_prefer_flexi"] * bonus)
 
     # D* preference for sleepover-capable staff
     if modes["sleepover_preference"] != "off":

@@ -13,6 +13,11 @@ import ServiceUsers from "@/pages/ServiceUsers";
 import Rules from "@/pages/Rules";
 import Settings from "@/pages/Settings";
 import Admins from "@/pages/Admins";
+import Rotas from "@/pages/Rotas";
+import RotaEditor from "@/pages/RotaEditor";
+import Holidays from "@/pages/Holidays";
+import Requests from "@/pages/Requests";
+import RequestLink from "@/pages/RequestLink";
 
 function App() {
     return (
@@ -20,10 +25,17 @@ function App() {
             <AuthProvider>
                 <BrowserRouter>
                     <Routes>
+                        {/* Public — no auth, no Layout */}
+                        <Route path="/r/:token" element={<RequestLink />} />
                         <Route path="/login" element={<Login />} />
+                        {/* Authenticated app shell */}
                         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
                             <Route path="/" element={<Navigate to="/dashboard" replace />} />
                             <Route path="/dashboard" element={<Dashboard />} />
+                            <Route path="/rotas" element={<Rotas />} />
+                            <Route path="/rotas/:id" element={<RotaEditor />} />
+                            <Route path="/holidays" element={<Holidays />} />
+                            <Route path="/requests" element={<Requests />} />
                             <Route path="/staff" element={<Staff />} />
                             <Route path="/service-users" element={<ServiceUsers />} />
                             <Route path="/rules" element={<Rules />} />

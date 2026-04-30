@@ -174,7 +174,7 @@ html[data-theme="modern"] .section-header {
     letter-spacing: 0.08em;
 }
 
-/* Shift / state pill colours (used in tables and rota cells) */
+/* Pill colours (same shapes everywhere; the cell colour values change per theme) */
 .pill {
     display: inline-flex;
     align-items: center;
@@ -193,6 +193,128 @@ html[data-theme="modern"] .section-header {
 .pill-sleep     { background: hsl(var(--accent-yellow) / .25); color: hsl(35 100% 25%); }
 .pill-weekend   { background: hsl(var(--accent-purple) / .15); color: hsl(var(--accent-purple)); }
 .pill-off       { background: hsl(var(--muted));               color: hsl(var(--fg-muted)); }
+
+/* =====================================================================
+   ROTA GRID — cell colours
+   ===================================================================== */
+.shift-cell {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 38px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--bg-elev));
+    color: hsl(var(--fg));
+    cursor: pointer;
+    user-select: none;
+    transition: filter .12s, transform .12s;
+}
+.shift-cell:hover { filter: brightness(0.97); }
+.shift-cell:active { transform: scale(0.98); }
+
+.shift-blank   { background: hsl(var(--bg-elev)); color: hsl(var(--fg-muted)); }
+.shift-D       { background: hsl(var(--bg-elev)); }
+.shift-Dstar   { background: hsl(48 100% 88%);   color: hsl(35 100% 22%); }
+.shift-N       { background: hsl(210 80% 88%);   color: hsl(220 80% 25%); }
+.shift-star    { background: hsl(48 100% 65%);   color: hsl(35 100% 18%); }
+.shift-OFF     { background: hsl(var(--muted));  color: hsl(var(--fg-muted)); }
+.shift-AL      { background: hsl(var(--accent-pink) / .25); color: hsl(var(--accent-pink)); }
+.shift-TRN     { background: hsl(var(--accent-red) / .25);  color: hsl(var(--accent-red)); }
+
+html[data-theme="modern"] .shift-Dstar { background: hsl(38 92% 88%);  color: hsl(38 92% 28%); }
+html[data-theme="modern"] .shift-N     { background: hsl(199 89% 90%); color: hsl(199 89% 28%); }
+html[data-theme="modern"] .shift-star  { background: hsl(38 92% 75%);  color: hsl(38 92% 22%); }
+html[data-theme="modern"] .shift-AL    { background: hsl(339 82% 92%); color: hsl(339 82% 38%); }
+html[data-theme="modern"] .shift-TRN   { background: hsl(0 75% 92%);   color: hsl(0 75% 38%); }
+
+/* Locked cell — small lock icon + slightly darker tint */
+.shift-cell.locked::after {
+    content: "🔒";
+    position: absolute;
+    top: 1px;
+    right: 2px;
+    font-size: 9px;
+    opacity: 0.7;
+}
+.shift-cell.locked { box-shadow: inset 0 0 0 2px hsl(var(--fg) / .25); }
+
+/* Hard-rule violation */
+.shift-cell.violation-hard { box-shadow: inset 0 0 0 2px hsl(var(--accent-red)); }
+.shift-cell.violation-soft { box-shadow: inset 0 0 0 2px hsl(var(--accent-yellow)); }
+
+/* Grid layout */
+.rota-grid {
+    display: grid;
+    grid-template-columns: 80px 60px 60px repeat(28, minmax(40px, 1fr));
+    gap: 0;
+    background: hsl(var(--bg-elev));
+    border: 1px solid hsl(var(--border-strong));
+    overflow-x: auto;
+    border-radius: var(--radius);
+}
+.rota-grid > * { border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
+.rota-grid > .week-divider { border-right: 2px solid hsl(var(--border-strong)); }
+
+.rota-header-cell {
+    background: hsl(var(--section) / .15);
+    color: hsl(var(--fg));
+    padding: 6px 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+.rota-header-cell.weekend { background: hsl(var(--accent-purple) / .12); }
+.rota-row-label {
+    background: hsl(var(--bg-elev));
+    padding: 6px 8px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    position: sticky;
+    left: 0;
+    z-index: 1;
+}
+.rota-row-sub { font-size: 0.7rem; color: hsl(var(--fg-muted)); font-weight: 500; }
+
+.cat-row { background: hsl(var(--section) / .08); }
+.cat-row.cat-fa     { background: hsl(var(--accent-green) / .08); }
+.cat-row.cat-al     { background: hsl(var(--accent-pink) / .06); }
+.cat-row.cat-trn    { background: hsl(var(--accent-red) / .06); }
+.cat-row.cat-oncall { background: hsl(var(--accent-bright-blue) / .08); }
+.cat-row.cat-sleep  { background: hsl(48 100% 92%); }
+.cat-row.cat-paycut { background: hsl(48 100% 80%); }
+.cat-row.cat-weekend { background: hsl(var(--accent-purple) / .08); }
+.cat-row.cat-med    { background: hsl(280 50% 88%); }
+
+.cat-cell {
+    padding: 4px;
+    text-align: center;
+    font-size: 0.7rem;
+    color: hsl(var(--fg));
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 2px;
+}
+.cat-cell-init {
+    display: inline-block;
+    padding: 1px 4px;
+    border-radius: 6px;
+    background: hsl(var(--bg-elev));
+    border: 1px solid hsl(var(--border));
+    font-size: 0.65rem;
+    font-weight: 600;
+}
 
 /* Paper-table — borders and tinting that resembles the printed form */
 .paper-table {

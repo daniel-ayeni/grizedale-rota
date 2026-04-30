@@ -11,6 +11,9 @@ import {
     Moon,
     LogOut,
     Calendar,
+    CalendarDays,
+    Plane,
+    Inbox,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import {
@@ -27,6 +30,9 @@ import api from "@/lib/api";
 
 const NAV = [
     { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
+    { to: "/rotas", label: "Rotas", icon: CalendarDays, testid: "nav-rotas" },
+    { to: "/holidays", label: "Holidays", icon: Plane, testid: "nav-holidays" },
+    { to: "/requests", label: "Requests", icon: Inbox, testid: "nav-requests" },
     { to: "/staff", label: "Staff", icon: Users, testid: "nav-staff" },
     { to: "/service-users", label: "Service Users", icon: HeartHandshake, testid: "nav-service-users" },
     { to: "/rules", label: "Rules", icon: Sliders, testid: "nav-rules" },

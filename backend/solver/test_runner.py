@@ -214,23 +214,12 @@ def main() -> int:
     # we are explicitly forcing D.A. onto the night side and verifying
     # the solver picks a female N partner.
     #
-    # NOTE on seed flags: with the current seed, A.A. is the only
-    # nights-capable first-aider (C.E. and J.R. are not FAs).  When
-    # D.A.=D* is locked, no-male-pair rules out A.A. on N — but FA-on-night
-    # then has no feasible candidate (D.A. is not FA either).  To isolate
-    # the male-pair rule from the FA-on-night rule, this test temporarily
-    # flags C.E. as first_aider=true (in-memory copy only — the seed file
-    # is untouched).  Realistically, the senior Night Support staff would
-    # likely BE first-aid trained, so this is also a heads-up to consider
-    # making it permanent in the seed.
+    # NOTE: As of Phase 1 polish, C.E. is permanently flagged as
+    # first_aider=true in the seed (resolves the night-FA gap), so this
+    # test no longer needs the in-memory FA override.
     # =====================================================================
     print("\n=== FORCED-SCENARIO TEST: D.A. locked on D* ===")
     forced_payload = json.loads(SEED_PATH.read_text())
-    for s in forced_payload["staff"]:
-        if s["initials"] == "C.E.":
-            s["first_aider"] = True   # test-only override
-            print("  (test-only override: C.E.first_aider := true to isolate male-pair rule from FA rule)")
-            break
     forced_dates = ["2026-04-22", "2026-04-29"]
     forced_payload["locked_cells"] = [
         {"staff_initials": "D.A.", "date": d, "shift": "D*"} for d in forced_dates

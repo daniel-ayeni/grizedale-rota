@@ -1,0 +1,47 @@
+{
+  "summary": "Phase 2 backend + frontend testing for Grizedale Rota Builder. 17/18 backend pytest pass against the public preview URL. All endpoints (rotas, leave, requests, request-tokens, public link, validate, copy-from-previous, cell PATCH + lock semantics) work correctly. C.E. first_aider migration verified true. Frontend: login, sidebar (Rotas/Holidays/Requests visible), /rotas list (seed rota 2026-03-23 published shown, Copy-from-previous + New Rota buttons present), rota editor renders 8 staff rows + all 10 category rows (First Aider, Annual Leave, Training, On-Call, Sleep-in, Pay cut off, Weekend Off, Med. cycle visible in screenshot), header shows title/dates/status/Validate/Revert-to-draft. Cell single-click cycle works (OFF→AL→TRN observed and PATCH propagates). Right-click popover renders with shift-picker grid + Lock toggle + Reason field + Save button. Validate button opens drawer. Theme toggle (Paper↔Modern) flips and persists in localStorage. /holidays renders 12-month grid for 2026. /requests Add Request dialog opens; Manage staff links drawer opens with staff selector + Generate button + active links list. Public /r/{token} loads in incognito (no auth) with staff name + 2026-04-20→2026-05-17 rota window + per-day preference rows. /rules page shows the new 'Overtime preference → flexi staff' rule. ONE backend bug found: solver overtime_prefer_flexi rule does NOT enforce per-week 48h cap — D.A. ends up with up to 84h in a single week (cap is enforced only on TOTAL bonus across 4 weeks, not per individual week). Spec explicitly requires 'NEVER exceeds 48h/week'.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/solver/generate (rule overtime_prefer_flexi)", "issue": "D.A. weekly hours can reach 60–84h; spec requires per-week cap of 48h. In rota_solver.py lines 338–346, the bonus IntVar is bounded by cap_overage = (weekly_cap × weeks − target_total), which is a TOTAL cap across 4 weeks. There is no per-week constraint on D.A.'s hours, so the solver concentrates overtime in 1–2 weeks. Fix: replace the global bonus with per-week IntVars, each bounded by max(0, weekly_cap - target_weekly_hours), and constrain each week's actual hours <= weekly_cap.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar footer", "issues": ["Still says 'Phase 1 · v0.2.0' even though we're on Phase 2 (rotas/holidays/requests routes are live). Bump the label to 'Phase 2 · v0.3.x' to match backend version 0.3.0."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_api.py",
+    "/app/test_reports/pytest/phase2_results.xml",
+    "/app/backend/tests/test_phase1_api.py"
+  ],
+  "action_items": [
+    "HIGH: Fix overtime_prefer_flexi solver rule to enforce per-week 48h cap on D.A. (currently only total-window cap). See backend_issues.critical for code location and fix sketch.",
+    "Optional: Update sidebar footer label from 'Phase 1 · v0.2.0' to reflect Phase 2."
+  ],
+  "critical_code_review_comments": [
+    "rota_solver.py overtime_prefer_flexi block: cap_total = weekly_cap * weeks is a multi-week sum; no per-week bound. With weekly_cap=48 and target=28h, the bonus var has bound cap_overage=80h that the solver can spend in any single week. Need per-week split: for each w in range(weeks): per_week_hours = sum(...) ; model.Add(per_week_hours <= weekly_cap).",
+    "server.py is now ~929 lines with all routers inline. Approaching the 700-line guidance threshold. Consider extracting routers/rotas.py, routers/leave.py, routers/requests.py, routers/public_link.py for Phase 3.",
+    "POST /api/leave updates duplicate (staff_initials, date) entries silently — fine, but only works if a unique index exists; current code relies on insert exception. Consider creating an explicit Mongo unique index db.leave.create_index([('staff_initials',1),('date',1)], unique=True) at startup so the upsert path is reliable.",
+    "/api/rotas/{id}/cell lock semantics: passing locked=true on a fresh PATCH then a different shift in the same body would skip the 409 (locked is not None branch). Code is correct because it checks 'patch.locked is not False' but logic depends on subtle Pydantic default (None vs False). A small unit test for this edge is recommended.",
+    "/api/public/request-link/{token}/submit accepts arbitrary date strings without validating they fall inside current_rota_window. Low risk but worth adding a window-bound check.",
+    "All Phase 1 contracts preserved — no regressions in /api/staff, /api/rules, /api/settings, /api/admins."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_api.py",
+    "/app/test_reports/iteration_3.json"
+  ],
+  "success_rate": {
+    "backend": "94% (17/18 — overtime per-week cap fails)",
+    "frontend": "100% (login, all 3 new routes, rota editor grid, click-cycle, right-click popover, lock toggle, Validate drawer, theme persistence, public-link no-auth flow, requests dialog + staff-links drawer all verified)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123! (seed admin from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Tests create-then-cleanup their own rotas/leave/requests/tokens (TEST_ prefixed). After cleanup script run, no leftover test data in DB. Two stray TEST_publiclink pending requests from automated runs were rejected via cleanup script.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 regression suite at /app/backend/tests/test_phase2_api.py has 18 tests, ~13s wall-time. The single failing test is TestOvertimeRule::test_solver_da_gets_extra_hours_capped_at_48 — it asserts D.A.'s weekly hours <= 48 for each of the 4 weeks. Once the solver is patched with per-week caps, this test should go green. Phase 1 suite at /app/backend/tests/test_phase1_api.py still passes. Frontend has comprehensive data-testid coverage (cell-{date}-{INIT} pattern verified). Don't write new browser scripts for the rota editor — the Phase 2 ones in this iteration's bash history confirmed cell-click-cycle (OFF→AL→TRN), right-click popover (shift grid + Lock + Save), Validate drawer, theme persistence, public link no-auth flow, and Manage Staff Links drawer all work end-to-end.",
+  "rca_of_the_issue": "OVERTIME PER-WEEK CAP BUG\nReproduction: POST /api/solver/generate {} → inspect D.A.'s shifts per week. Observed 60h–84h in week 0 or 2 across multiple runs.\nRoot cause (backend/solver/rota_solver.py:339-346):\n  cap_total = ot_weekly_cap * weeks            # 48*4 = 192\n  cap_overage = max(0, cap_total - target_total) # 192-112 = 80\n  bonus = NewIntVar(0, cap_overage, ...)         # global bonus var, no weekly split\n  model.Add(bonus <= over)                       # over is 4-week overage, again global\nNo per-week constraint exists. The solver maximises the negative-coefficient bonus, which is most efficiently 'spent' by stacking shifts in one week (lowest pairing/no-N->D conflicts).\nMitigation (proposed):\n  for w in range(weeks):\n      week_actual = sum(shift_hours[t] * x[s][7*w+di][t] for di in range(7) for t in SHIFT_TYPES)\n      model.Add(week_actual <= ot_weekly_cap)\n      week_target = info['target_weekly_hours']\n      week_over = NewIntVar(0, ot_weekly_cap - week_target, f'ot_bonus_{s}_w{w}')\n      model.Add(week_actual - week_target <= week_over)\n      soft_terms.append(-weights['overtime_prefer_flexi'] * week_over)\nDelete the existing global bonus block. After patch, retest with TestOvertimeRule (should average ≥35h/week and never exceed 48h)."
+}

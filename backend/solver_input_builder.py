@@ -40,6 +40,15 @@ def _rules_to_solver_weights(rules_config: dict[str, Any]) -> dict[str, int]:
     return out
 
 
+def _rules_to_solver_params(rules_config: dict[str, Any]) -> dict[str, dict]:
+    rules = rules_config.get("rules", {}) if rules_config else {}
+    out: dict[str, dict] = {}
+    for key, val in rules.items():
+        if isinstance(val, dict) and isinstance(val.get("params"), dict):
+            out[key] = val["params"]
+    return out
+
+
 async def build_solver_payload(db, override_start_date: str | None = None) -> dict[str, Any]:
     """Read staff / rules / settings from Mongo and build the solver input."""
     staff_docs = await db.staff.find({"active": True}, {"_id": 0}).to_list(1000)
@@ -57,5 +66,6 @@ async def build_solver_payload(db, override_start_date: str | None = None) -> di
         "avoid_pairs": [],
         "rules": _rules_to_solver_modes(rules_doc),
         "rule_weights": _rules_to_solver_weights(rules_doc),
+        "rule_params": _rules_to_solver_params(rules_doc),
         "shift_hours": settings.get("shift_hours") or {},
     }

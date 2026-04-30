@@ -1,11 +1,16 @@
-"""Idempotent Mongo seed-on-boot for Grizedale rota app (Phase 1).
+"""Idempotent Mongo seed-on-boot for Grizedale rota app.
 
 Creates these collections if missing/empty:
     users          — one admin from .env (ADMIN_EMAIL / ADMIN_PASSWORD)
     staff          — 8 Grizedale staff from seed/grizedale.json
     service_users  — 7 placeholder service users
-    rules_config   — single doc with rule modes / weights
+    rules_config   — single doc (uses rule_definitions.default_rules_config)
     settings       — single doc with home name, shift hours, holidays etc
+    rotas          — one previous published rota (so "copy from previous" works)
+
+Also runs a per-boot MIGRATION:
+    - Force-set C.E.first_aider=true if currently false (Phase 1 polish:
+      C.E. is the female nights-capable FA; resolves night-FA gap).
 """
 
 from __future__ import annotations
@@ -14,10 +19,12 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from auth import hash_password
+from solver.rota_solver import solve_rota
+from solver.rule_definitions import default_rules_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +53,9 @@ async def seed_if_empty(db) -> dict:
     # Indexes
     await db.users.create_index("email", unique=True)
     await db.staff.create_index("initials", unique=True)
+    await db.leave.create_index([("staff_initials", 1), ("date", 1)], unique=True)
+    await db.request_tokens.create_index("token", unique=True)
+    await db.rotas.create_index("start_date")
 
     # users
     if await db.users.count_documents({}) == 0:
@@ -81,6 +91,33 @@ async def seed_if_empty(db) -> dict:
         await db.staff.insert_many(docs)
         summary["staff"] = len(docs)
 
+    # MIGRATION: ensure C.E. is first_aider=true (Phase 1 polish)
+    res = await db.staff.update_one(
+        {"initials": "C.E.", "first_aider": {"$ne": True}},
+        {"$set": {"first_aider": True, "updated_at": _now_iso()}},
+    )
+    if res.modified_count > 0:
+        logger.info("Migration: set C.E.first_aider=true (was false)")
+        summary["migration_ce_fa"] = res.modified_count
+
+    # MIGRATION: ensure rules_config has overtime_prefer_flexi entry
+    rules_doc = await db.rules_config.find_one({}, {"_id": 0})
+    if rules_doc and "overtime_prefer_flexi" not in (rules_doc.get("rules") or {}):
+        from solver.rule_definitions import RULES_BY_ID
+        ot = RULES_BY_ID["overtime_prefer_flexi"]
+        new_entry = {
+            "mode": ot["severity_default"],
+            "weight": ot["weight_default"],
+            "immovable": ot["immovable"],
+            "params": dict(ot["params_default"]),
+        }
+        await db.rules_config.update_one(
+            {},
+            {"$set": {"rules.overtime_prefer_flexi": new_entry, "updated_at": _now_iso()}},
+        )
+        logger.info("Migration: added overtime_prefer_flexi rule to rules_config")
+        summary["migration_overtime_rule"] = 1
+
     # service users (7 placeholders)
     if await db.service_users.count_documents({}) == 0:
         placeholders = []
@@ -102,21 +139,7 @@ async def seed_if_empty(db) -> dict:
     if await db.rules_config.count_documents({}) == 0:
         rules_doc = {
             "id": "rules_singleton",
-            "rules": {
-                "day_cover":             {"mode": "hard", "weight": 0,   "immovable": True},
-                "night_cover":           {"mode": "hard", "weight": 0,   "immovable": True},
-                "med_competent_required": {"mode": "hard", "weight": 5000},
-                "first_aider_required":   {"mode": "hard", "weight": 5000},
-                "no_male_pair_alone":     {"mode": "hard", "weight": 5000},
-                "no_n_to_d":             {"mode": "hard", "weight": 0,   "immovable": True},
-                "no_dstar_to_dstar":     {"mode": "hard", "weight": 0,   "immovable": True},
-                "manager_no_shifts":     {"mode": "hard", "weight": 100000},
-                "contracted_hours_min":  {"mode": "hard", "weight": 50},
-                "sleepover_preference":  {"mode": "soft", "weight": 5},
-                "preferred_off_days":    {"mode": "soft", "weight": 20},
-                "avoid_pairs":           {"mode": "soft", "weight": 30},
-                "weekend_fairness":      {"mode": "soft", "weight": 10},
-            },
+            "rules": default_rules_config(),
             "updated_at": _now_iso(),
         }
         await db.rules_config.insert_one(rules_doc)
@@ -138,4 +161,76 @@ async def seed_if_empty(db) -> dict:
         await db.settings.insert_one(settings)
         summary["settings"] = 1
 
+    # rotas — seed ONE previous published rota (so "copy from previous"
+    # has data to copy on day one). Dated 4 weeks before the default start.
+    if await db.rotas.count_documents({}) == 0:
+        try:
+            previous = await _generate_previous_rota(db)
+            if previous:
+                await db.rotas.insert_one(previous)
+                summary["rotas"] = 1
+                logger.info("Seeded previous published rota %s", previous["start_date"])
+        except Exception as exc:
+            logger.exception("Failed to seed previous rota: %s", exc)
+
     return summary
+
+
+async def _generate_previous_rota(db) -> dict | None:
+    """Generate a previous published rota using the solver."""
+    settings = await db.settings.find_one({}, {"_id": 0}) or {}
+    staff_docs = await db.staff.find({"active": True}, {"_id": 0}).to_list(1000)
+
+    default_start = settings.get("rota_start_date_default", "2026-04-20")
+    weeks = int(settings.get("rota_length_weeks", 4))
+    prev_start_dt = datetime.strptime(default_start, "%Y-%m-%d") - timedelta(weeks=weeks)
+    prev_start = prev_start_dt.strftime("%Y-%m-%d")
+
+    payload = {
+        "rota_start_date": prev_start,
+        "weeks": weeks,
+        "staff": [{k: s.get(k) for k in (
+            "initials", "full_name", "role", "gender",
+            "target_weekly_hours", "is_admin_only",
+            "medication_competent", "first_aider", "fire_trained",
+            "trust_level", "can_do_days", "can_do_nights", "can_do_sleepover",
+            "manager_weekday_admin", "preferred_off_days",
+        )} for s in staff_docs],
+        "leave": [],
+        "locked_cells": [],
+        "rules": {
+            "first_aider_required": "hard",
+            "med_competent_required": "hard",
+            "no_male_pair_alone": "hard",
+            "manager_no_shifts": "hard",
+            "contracted_hours_min": "hard",
+            "sleepover_preference": "soft",
+        },
+    }
+    result = solve_rota(payload, time_limit_s=10)
+    if not result.get("success"):
+        logger.warning("Previous-rota solve failed: %s", result.get("reason"))
+        return None
+
+    assignments = []
+    for day in result["rota"]:
+        for a in day["assignments"]:
+            assignments.append({
+                "date": day["date"],
+                "staff_initials": a["staff_initials"],
+                "shift": a["shift"],
+                "locked": False,
+            })
+
+    return {
+        "id": str(uuid.uuid4()),
+        "start_date": prev_start,
+        "weeks": weeks,
+        "assignments": assignments,
+        "on_call": [],
+        "status": "published",
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "created_by": "seed",
+        "title": f"Grizedale Monthly {prev_start}",
+    }
