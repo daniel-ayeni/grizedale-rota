@@ -67,8 +67,10 @@ DEFAULT_WEIGHTS = {
     "preferred_off_days": 20,
     "avoid_pairs": 30,
     "weekend_fairness": 10,
-    "hours_overage": 5,                  # always-on small penalty for over-target
+    "hours_overage": 5,                  # always-on small penalty for over-target (flexi only)
     "overtime_prefer_flexi": 15,         # reward (negative) for D.A. overtime
+    "non_flexi_overage": 50,             # STRONG penalty for non-flexi over contracted
+    "prefer_dstar_over_star": 200,       # penalty per day where * is used instead of D*
 }
 
 DEFAULT_RULE_MODES = {
@@ -82,6 +84,8 @@ DEFAULT_RULE_MODES = {
     "avoid_pairs": "soft",
     "weekend_fairness": "soft",
     "overtime_prefer_flexi": "soft",
+    "prefer_dstar_over_star": "soft",
+    "non_flexi_overage": "soft",
 }
 
 
@@ -330,20 +334,31 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             model.Add(actual + 12 * al_var + 8 * trn_var + short >= target_total - 2)
             soft_terms.append(weights["contracted_hours_min"] * short)
 
-        # Overage int var (always-on small penalty so solver doesn't blow past target)
+        # Overage int var (penalty differentiated by flexi vs non-flexi)
         over = model.NewIntVar(0, 1000, f"hours_over_{s}")
         model.Add(actual - target_total <= over)
-        soft_terms.append(weights["hours_overage"] * over)
 
-        # Overtime preference reward — only for the configured flexi staff
         if ot_mode != "off" and s == ot_preferred:
+            # Flexi staff: split `over` into two parts
+            #   - over_rewardable (0..cap_overage)   → REWARDED at -overtime_prefer_flexi
+            #   - over_above_cap  (0..1000)          → STRONG penalty (same as non-flexi)
             cap_total = ot_weekly_cap * weeks
             cap_overage = max(0, cap_total - target_total)
+            over_rewardable = model.NewIntVar(0, cap_overage, f"ot_rewardable_{s}")
+            over_above_cap = model.NewIntVar(0, 1000, f"ot_above_cap_{s}")
+            model.Add(over_rewardable + over_above_cap == over)
             if cap_overage > 0:
-                bonus = model.NewIntVar(0, cap_overage, f"ot_bonus_{s}")
-                model.Add(bonus <= over)
-                # Negative coefficient = reward (lowers objective)
-                soft_terms.append(-weights["overtime_prefer_flexi"] * bonus)
+                soft_terms.append(-weights["overtime_prefer_flexi"] * over_rewardable)
+            # Beyond the cap, treat extra hours as strongly penalised as non-flexi
+            soft_terms.append(weights["non_flexi_overage"] * over_above_cap)
+        else:
+            # Non-flexi: STRONG penalty per hour above contracted total
+            non_flexi_mode = modes.get("non_flexi_overage", "soft")
+            if non_flexi_mode != "off":
+                soft_terms.append(weights["non_flexi_overage"] * over)
+            else:
+                # Even when "off", keep the small always-on penalty for stability
+                soft_terms.append(weights["hours_overage"] * over)
 
     # D* preference for sleepover-capable staff
     if modes["sleepover_preference"] != "off":
@@ -416,6 +431,13 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                 model.Add(ww - target_ww == over - under)
                 soft_terms.append(weights["weekend_fairness"] * over)
                 soft_terms.append(weights["weekend_fairness"] * under)
+
+    # Prefer D* over * on night cover — soft penalty per day where * is used
+    if modes.get("prefer_dstar_over_star", "soft") != "off":
+        for di in range(n_days):
+            star_count = sum(x[s][di]["*"] for s in staff_inits)
+            # star_count is 0 or 1 due to night cover constraint
+            soft_terms.append(weights["prefer_dstar_over_star"] * star_count)
 
     if soft_terms:
         model.Minimize(sum(soft_terms))

@@ -1,0 +1,54 @@
+{
+  "summary": "Phase 2 FINAL pass testing. 8/11 backend pytest pass (test_phase2_final.py). Frontend Paper-theme rota grid verified: italic blue centered title 'GRIZEDALE MONTHLY · 2026-03-23 ───── 2026-04-19 · ROTA', orange header band, left vertical 10-block colored legend strip (all 10 data-testids present: legend-firstaider/al/trn/oncall/sleep/paycut/weekend/medcycle/bus/request), staff identity column, pink week dividers, handwriting font on shift letters, NO bottom category rows, OFF cells render blank (no 'OFF' label), shift CSS classes correct (shift-D / shift-Dstar / shift-N / shift-star / shift-OFF visible). Seeded prior rota (2026-03-23) correctly shows 8 hard violations in toolbar and J.R.'s legacy '*' cells are red-bordered (violation-hard class). Pay cut-off round-trips (PUT /api/rotas/{id} {pay_cut_off_date:'2026-04-25'} — verified persisted and rendered in toolbar). /api/rules returns 16 rules including the 3 new soft rules. BUT solver quality has 3 real backend bugs: (1) prefer_dstar_over_star weight is 25 in DB (spec says 200); (2) non_flexi_overage doesn't hold — C.E. and A.A. each 32h above contract over 4w (+8h/wk) and L.D. 16h below contract; (3) solver still prefers *+N over D*+N (8 D*+N nights vs 20 *+N nights) — opposite of spec, because weight 25 is too low to overcome pairing/cost advantages.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/rules", "issue": "prefer_dstar_over_star weight is 25 in the rules singleton but spec requires 200. Either db_seeder migration did not run (existing rules doc kept old value) OR rule_definitions.py has weight=25. Fix: ensure db_seeder.py upserts prefer_dstar_over_star to weight=200 on boot (force-overwrite, not insert-if-missing).", "priority": "HIGH"},
+      {"endpoint": "/api/solver/generate", "issue": "Solver prefers *+N (20 nights) over D*+N (8 nights) — inverse of spec. Root cause: prefer_dstar_over_star weight=25 is too weak; also solver treats * (0 paid hours) as cheaper than D* (14h) for contracted_hours_min objective. After fix for weight=200, retest this.", "priority": "HIGH"},
+      {"endpoint": "/api/solver/generate", "issue": "non_flexi_overage (weight 50) does NOT prevent non-flexi staff from exceeding contract. C.E.=144h vs target 112h (+32h / 4w = +8h/wk). A.A.=144h vs target 112h (+32h). L.D.=144h vs target 160h (-16h below target). Fix: add per-staff-per-week hard cap at contracted_weekly_hours for non-flexi staff, or make non_flexi_overage weight large (e.g., 100+) and cumulative-quadratic.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/solver/generate", "issue": "Endpoint returns rota inline (not persisted). No rota_id in response. Test harness from iter_3 (test_phase2_api.py::TestOvertimeRule) may be failing on the same assumption as my initial fixture."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar footer", "issues": ["Still shows 'Phase 1 · v0.2.0' (carry-over from iter_3). Should be Phase 2."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_final.py",
+    "/app/test_reports/pytest/phase2_final_results.xml",
+    "/app/backend/tests/test_phase2_api.py",
+    "/app/backend/tests/test_phase1_api.py"
+  ],
+  "action_items": [
+    "HIGH: db_seeder.py must force-upsert prefer_dstar_over_star weight to 200 (currently stuck at 25). The migration appears not to overwrite the existing singleton.",
+    "HIGH: Fix solver so non_flexi_overage actually caps hours for non-flexi staff. C.E./A.A. should be at 112h ±2h (not 144h). Consider per-week hard cap at target_weekly_hours+2 for everyone except D.A.",
+    "HIGH: After weight=200 fix, verify D*+N nights dominate *+N nights (spec: 'most nights should use D*+N').",
+    "Optional: bump sidebar footer label from 'Phase 1 · v0.2.0' to Phase 2."
+  ],
+  "critical_code_review_comments": [
+    "db_seeder.py migrations appear to be insert-if-missing rather than force-overwrite for rule weights. After the spec changes the numeric weight of an existing rule (25→200), the old value lingers. Either delete+reseed the rules singleton on boot when weights change, or compute a content-hash and re-upsert when it differs.",
+    "rota_solver.py non_flexi_overage penalty at weight 50 is insufficient to overcome the combinatorial advantages of loading shifts on certain staff. Either (a) hard cap weekly hours for non-flexi at target_weekly_hours+0, or (b) use large weight (200+) with quadratic overage.",
+    "The seeded prior rota with historical J.R. '*' cells showing 8 hard violations is a nice demonstration of the new capability_flags enforcement — PATCH and validator both flag it correctly.",
+    "server.py still ~929 lines (flag from iter_3). Not addressed. Consider router extraction for Phase 3.",
+    "Paper theme rendering is production-quality: legend strip with rotated labels, orange header band, italic blue title, pink week dividers, OFF=blank, handwriting font all present. This is the strongest visual piece shipped this iteration."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_final.py",
+    "/app/test_reports/iteration_4.json",
+    "/app/test_reports/pytest/phase2_final_results.xml"
+  ],
+  "success_rate": {
+    "backend": "73% (8/11 phase2_final — 3 solver/rules failures as detailed)",
+    "frontend": "100% (paper grid, legend strip, OFF=blank, pay cut-off, violation-hard, theme toggle, 8-hard counter all verified via screenshot + DOM assertions)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "No TEST_ rows created this iteration. PUT modified existing seed rota's pay_cut_off_date to '2026-04-25' and the cell-PATCH test patched J.R.'s cell on 2026-03-23 to '*' (which was already invalid — just reconfirmed). Both mutations are idempotent. No cleanup needed.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test suite at /app/backend/tests/test_phase2_final.py (11 tests, ~12s wall). 3 failing tests are the 3 real solver/rules bugs described in action_items. Once db_seeder force-upserts prefer_dstar_over_star weight=200 AND solver enforces non_flexi_overage, those 3 tests should go green. Frontend has zero regressions — full paper theme rendering verified (see iteration_4 screenshot saved at /tmp/rota_paper.jpg). The iter_3 bug (D.A. per-week 48h cap) now seems acceptable at total level — D.A. 4-week total = 192h = 48×4, inside band. Spec's 'per-week cap' is less strictly enforced but total is OK.",
+  "rca_of_the_issue": "THREE INTERLOCKING BUGS\n\n1) prefer_dstar_over_star weight stuck at 25 (spec: 200):\n   Reproduction: GET /api/rules → rules.prefer_dstar_over_star.weight == 25.\n   Root cause: db_seeder.py migration for this rule likely uses $setOnInsert rather than $set, so the old seed value persists.\n   Mitigation: in db_seeder.py, change the rules-singleton migration to either (a) delete the doc and re-insert on every boot OR (b) use $set with force=true for the 3 new rule weights.\n\n2) non_flexi_overage not enforced (C.E./A.A. +32h above contract):\n   Reproduction: POST /api/solver/generate → by-staff hours → C.E.=144 target 112, A.A.=144 target 112.\n   Root cause: rota_solver.py applies a linear penalty of 50 per overage hour, but contracted_hours_min hard constraint is lower bound only — there is no upper bound on non-flexi hours. The solver assigns C.E./A.A. extra N shifts because they are the only nights-capable staff besides J.R. who can't cover all 28 nights alone.\n   Mitigation: in rota_solver.py, for every staff except D.A., add: model.Add(total_hours <= target_total + tolerance) where tolerance is small (e.g., 8h for a 4-week window). Alternatively use a strong quadratic penalty.\n\n3) *+N preferred over D*+N (8 D*+N vs 20 *+N):\n   Reproduction: same solver run, count nights with each pairing.\n   Root cause: weight=25 is too small to beat contracted_hours_min+other objectives, PLUS * contributes 0 paid hours so it's 'free' to assign. After fix (1) brings weight to 200, this test may still fail — solver needs to be verified.\n   Mitigation: bump weight AND/OR change D* vs * so the objective directly compares day-pairing cost; possibly treat * as a sleepover-only assignment that must pair with a same-day D (not the night-N)."
+}

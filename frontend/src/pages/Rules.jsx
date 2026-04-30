@@ -24,6 +24,8 @@ const RULE_DEFS = [
     { key: "avoid_pairs",            name: "Avoid pairing flagged staff",         desc: "Avoid placing 'do not pair' staff together on the same shift." },
     { key: "weekend_fairness",       name: "Fair distribution of weekends off",   desc: "Spread weekend shifts proportionally to contracted hours." },
     { key: "overtime_prefer_flexi",  name: "Overtime preference → flexi staff",   desc: "When extra hours are needed above contracted minimums, prefer giving them to the flexi staff (default D.A.) up to a weekly cap.", hasParams: true },
+    { key: "prefer_dstar_over_star", name: "Prefer D* over * on night cover",     desc: "When the night sleepover slot can be filled by D* (a day-staff who sleeps in) or * (sleepover-only), prefer D*." },
+    { key: "non_flexi_overage",      name: "Non-flexi staff stay near contracted hours", desc: "Strong penalty for assigning non-flexi staff above their contracted weekly hours × weeks." },
 ];
 
 const MODES = [

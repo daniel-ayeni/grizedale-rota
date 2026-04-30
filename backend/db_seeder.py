@@ -100,23 +100,37 @@ async def seed_if_empty(db) -> dict:
         logger.info("Migration: set C.E.first_aider=true (was false)")
         summary["migration_ce_fa"] = res.modified_count
 
+    # MIGRATION: ensure J.R. has can_do_sleepover=false (Phase 2 user feedback)
+    res = await db.staff.update_one(
+        {"initials": "J.R.", "can_do_sleepover": {"$ne": False}},
+        {"$set": {"can_do_sleepover": False, "updated_at": _now_iso()}},
+    )
+    if res.modified_count > 0:
+        logger.info("Migration: set J.R.can_do_sleepover=false")
+        summary["migration_jr_sleepover"] = res.modified_count
+
     # MIGRATION: ensure rules_config has overtime_prefer_flexi entry
     rules_doc = await db.rules_config.find_one({}, {"_id": 0})
-    if rules_doc and "overtime_prefer_flexi" not in (rules_doc.get("rules") or {}):
+    if rules_doc:
+        rules = rules_doc.get("rules") or {}
         from solver.rule_definitions import RULES_BY_ID
-        ot = RULES_BY_ID["overtime_prefer_flexi"]
-        new_entry = {
-            "mode": ot["severity_default"],
-            "weight": ot["weight_default"],
-            "immovable": ot["immovable"],
-            "params": dict(ot["params_default"]),
-        }
-        await db.rules_config.update_one(
-            {},
-            {"$set": {"rules.overtime_prefer_flexi": new_entry, "updated_at": _now_iso()}},
-        )
-        logger.info("Migration: added overtime_prefer_flexi rule to rules_config")
-        summary["migration_overtime_rule"] = 1
+        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage"):
+            if rule_id in rules:
+                continue
+            r_def = RULES_BY_ID[rule_id]
+            new_entry = {
+                "mode": r_def["severity_default"],
+                "weight": r_def["weight_default"],
+                "immovable": r_def["immovable"],
+            }
+            if r_def.get("params_default"):
+                new_entry["params"] = dict(r_def["params_default"])
+            await db.rules_config.update_one(
+                {},
+                {"$set": {f"rules.{rule_id}": new_entry, "updated_at": _now_iso()}},
+            )
+            logger.info("Migration: added %s rule to rules_config", rule_id)
+            summary[f"migration_rule_{rule_id}"] = 1
 
     # service users (7 placeholders)
     if await db.service_users.count_documents({}) == 0:

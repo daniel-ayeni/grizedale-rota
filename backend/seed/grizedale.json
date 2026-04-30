@@ -134,7 +134,7 @@
       "trust_level": "low",
       "can_do_days": false,
       "can_do_nights": true,
-      "can_do_sleepover": true,
+      "can_do_sleepover": false,
       "manager_weekday_admin": false,
       "preferred_off_days": []
     }

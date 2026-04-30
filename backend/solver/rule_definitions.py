@@ -149,6 +149,22 @@ RULES: list[dict] = [
             "weekly_cap": 48,
         },
     },
+    {
+        "id": "prefer_dstar_over_star",
+        "name": "Prefer D* over * on night cover",
+        "description": "When the night sleepover slot can be filled by either D* (a day-staff who sleeps in) or * (sleepover-only), prefer D* — only use * when D* is infeasible.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 200,
+    },
+    {
+        "id": "non_flexi_overage",
+        "name": "Non-flexi staff stay near contracted hours",
+        "description": "Strong penalty for assigning non-flexi staff hours beyond their contracted weekly hours × weeks. Flexi staff (see overtime preference rule) are exempt.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 50,
+    },
 ]
 
 RULES_BY_ID = {r["id"]: r for r in RULES}
