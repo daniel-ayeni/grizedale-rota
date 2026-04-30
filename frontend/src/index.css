@@ -247,13 +247,13 @@ html[data-theme="modern"] .shift-cell {
 .shift-cell:active { transform: scale(0.98); }
 
 .shift-blank   { background: hsl(0 0% 100%); color: transparent; }
-.shift-D       { background: hsl(0 0% 100%); color: hsl(0 0% 12%); }
-.shift-Dstar   { background: hsl(48 100% 92%); color: hsl(35 100% 22%); }
-.shift-N       { background: hsl(0 0% 100%); color: hsl(220 80% 32%); }
-.shift-star    { background: hsl(48 100% 60%); color: hsl(35 100% 18%); }
-.shift-OFF     { background: hsl(0 0% 100%); color: transparent; }  /* OFF renders BLANK */
-.shift-AL      { background: hsl(var(--accent-pink) / .55); color: hsl(var(--accent-pink) / 1); }
-.shift-TRN     { background: hsl(var(--accent-red) / .55);  color: hsl(0 75% 30%); }
+.shift-D       { background: #FFFBE8; color: hsl(0 0% 18%); }
+.shift-Dstar   { background: #FFF3B0; color: hsl(0 0% 18%); }
+.shift-N       { background: #D6E6F2; color: hsl(0 0% 18%); }
+.shift-star    { background: #FFE066; color: hsl(0 0% 18%); }
+.shift-OFF     { background: hsl(0 0% 100%); color: transparent; }
+.shift-AL      { background: #E91E63; color: white; }
+.shift-TRN     { background: #D32F2F; color: white; }
 
 html[data-theme="modern"] .shift-blank { background: hsl(var(--bg-elev)); }
 html[data-theme="modern"] .shift-D     { background: hsl(var(--bg-elev)); color: hsl(var(--fg)); }
@@ -266,18 +266,30 @@ html[data-theme="modern"] .shift-TRN   { background: hsl(0 75% 92%);   color: hs
 
 .shift-cell .oncall-chip {
     position: absolute;
-    bottom: 1px;
-    right: 2px;
-    background: hsl(var(--accent-bright-blue));
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #2196F3;
     color: white;
     font-family: 'Inter', sans-serif;
     font-size: 0.55rem;
-    font-weight: 600;
-    line-height: 1;
+    font-weight: 700;
+    line-height: 1.2;
+    padding: 1px 0;
+    text-align: center;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+}
+html[data-theme="modern"] .shift-cell .oncall-chip {
+    bottom: 1px;
+    left: auto;
+    right: 2px;
     padding: 1px 3px;
     border-radius: 3px;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
+}
+.shift-cell:has(.oncall-chip) {
+    /* push the shift letter slightly up so on-call strip doesn't overlap */
+    padding-bottom: 8px;
 }
 
 .shift-cell.locked::after {

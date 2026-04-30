@@ -305,11 +305,22 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             model.Add(x[s][di]["D*"] + x[s][di + 1]["D*"] <= 1)
 
     # Contracted hours (>= target*weeks - AL*12 - TRN*8 - 2)
-    # Plus: overtime preference for the flexi staff (default D.A.) — soft
-    # NEGATIVE coefficient (reward) for hours above target, capped by
-    # weekly_cap (UK WTR default 48h/week).
+    # Plus: overtime preference for the flexi staff — soft NEGATIVE coefficient
+    # (reward) for hours above target, capped by weekly_cap (UK WTR default 48h/week).
     ot_params = rule_params.get("overtime_prefer_flexi") or {}
-    ot_preferred = ot_params.get("preferred_staff_initials", "D.A.")
+    # Determine flexi staff set:
+    #   1. If staff_initials_override is non-empty, use that explicit list
+    #   2. Else, auto-detect from role == applies_to_role (default "Flexi")
+    #   3. Legacy: if `preferred_staff_initials` (single string) is set, use it
+    override = ot_params.get("staff_initials_override") or []
+    role_match = ot_params.get("applies_to_role", "Flexi")
+    legacy_single = ot_params.get("preferred_staff_initials")
+    if override:
+        ot_flexi_set = set(override)
+    elif legacy_single:
+        ot_flexi_set = {legacy_single}
+    else:
+        ot_flexi_set = {s["initials"] for s in staff_list if s.get("role") == role_match}
     ot_weekly_cap = int(ot_params.get("weekly_cap", 48))
     ot_mode = modes.get("overtime_prefer_flexi", "soft")
 
@@ -338,7 +349,7 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
         over = model.NewIntVar(0, 1000, f"hours_over_{s}")
         model.Add(actual - target_total <= over)
 
-        if ot_mode != "off" and s == ot_preferred:
+        if ot_mode != "off" and s in ot_flexi_set:
             # Flexi staff: split `over` into two parts
             #   - over_rewardable (0..cap_overage)   → REWARDED at -overtime_prefer_flexi
             #   - over_above_cap  (0..1000)          → STRONG penalty (same as non-flexi)
@@ -441,6 +452,40 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                 model.Add(ww - target_ww == over - under)
                 soft_terms.append(weights["weekend_fairness"] * over)
                 soft_terms.append(weights["weekend_fairness"] * under)
+
+    # Accepted non-OFF requests as soft preferences (Phase 3)
+    # Each preference adds a small penalty when the staff's actual shift
+    # on that date doesn't match the requested preference.
+    accepted_requests = payload.get("accepted_requests") or []
+    REQ_WEIGHT = 15
+    for req in accepted_requests:
+        s = req.get("staff_initials")
+        d_str = req.get("date")
+        pref = (req.get("shift_preference") or "").upper()
+        if s not in staff_by:
+            continue
+        try:
+            di = days.index(_parse_date(d_str))
+        except (ValueError, KeyError):
+            continue
+        wanted = set()
+        if pref == "WANT_N":
+            wanted = {"N"}
+        elif pref == "WANT_D":
+            wanted = {"D", "D*"}
+        elif pref == "WANT_DSTAR":
+            wanted = {"D*"}
+        elif pref == "AVOID":
+            # AVOID = penalty if working at all
+            for t in WORKING_SHIFTS:
+                soft_terms.append(REQ_WEIGHT * x[s][di][t])
+            continue
+        else:
+            continue
+        # penalty for any not-wanted shift type
+        for t in SHIFT_TYPES:
+            if t not in wanted:
+                soft_terms.append(REQ_WEIGHT * x[s][di][t])
 
     # Prefer D* over * on night cover — soft penalty per day where * is used
     if modes.get("prefer_dstar_over_star", "soft") != "off":

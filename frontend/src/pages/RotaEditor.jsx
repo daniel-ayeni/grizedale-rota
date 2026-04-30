@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import {
     ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle,
-    AlertCircle, Copy, Save,
+    AlertCircle, Copy, Save, Sparkles, Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,14 @@ import {
 import {
     Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+    AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+    AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+    Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -70,6 +78,30 @@ export default function RotaEditor() {
     const [homeName, setHomeName] = useState("Grizedale");
     const violationCellsRef = useRef({ hard: new Set(), soft: new Set() });
     const [violationKey, setViolationKey] = useState(0);
+    const [generating, setGenerating] = useState(false);
+    const [blockersOpen, setBlockersOpen] = useState(false);
+    const [blockers, setBlockers] = useState(null);
+
+    const generateRota = async () => {
+        setGenerating(true);
+        try {
+            const { data } = await api.post(`/rotas/${id}/generate`);
+            await load();
+            const summary = data?.validation_report?.summary || { hard: 0, soft: 0 };
+            const sec = ((data?.solve_time_ms || 0) / 1000).toFixed(1);
+            toast.success(`Rota generated in ${sec}s · ${summary.hard} hard · soft score ${data?.soft_violations_score ?? 0} · ${data?.locked_preserved || 0} locked preserved`);
+        } catch (err) {
+            const detail = err?.response?.data;
+            if (detail && detail.success === false && Array.isArray(detail.blocking_constraints)) {
+                setBlockers(detail);
+                setBlockersOpen(true);
+            } else {
+                toast.error(formatApiError(err));
+            }
+        } finally {
+            setGenerating(false);
+        }
+    };
 
     const load = async () => {
         try {
@@ -91,6 +123,16 @@ export default function RotaEditor() {
         }
     };
     useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+
+    const [searchParams, setSearchParams] = useSearchParams();
+    useEffect(() => {
+        // Auto-trigger generate when navigated with ?generate=1 (from /dashboard).
+        if (searchParams.get("generate") === "1" && rota && !generating) {
+            setSearchParams({}, { replace: true });
+            generateRota();
+        }
+        /* eslint-disable-next-line */
+    }, [rota]);
 
     const dates = useMemo(() => {
         if (!rota) return [];
@@ -224,6 +266,28 @@ export default function RotaEditor() {
                     <Badge variant={rota.status === "published" ? "default" : "outline"} data-testid="rota-status-badge">{rota.status}</Badge>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                    <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                            <Button className="btn-primary" size="sm" disabled={generating} data-testid="rota-generate-button">
+                                {generating
+                                    ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Solving…</>
+                                    : <><Sparkles className="w-3.5 h-3.5 mr-1.5" /> Generate Rota</>}
+                            </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent data-testid="rota-generate-confirm">
+                            <AlertDialogHeader>
+                                <AlertDialogTitle>Generate this rota?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                    The solver will fill all empty unlocked cells. Locked cells, AL, TRN
+                                    and on-call assignments will be preserved. Up to 15s.
+                                </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                                <AlertDialogCancel data-testid="rota-generate-cancel">Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={generateRota} data-testid="rota-generate-confirm-btn">Generate</AlertDialogAction>
+                            </AlertDialogFooter>
+                        </AlertDialogContent>
+                    </AlertDialog>
                     <Button variant="outline" size="sm" onClick={async () => {
                         try {
                             const res = await api.post(`/rotas/${id}/copy-from-previous`);
@@ -422,6 +486,35 @@ export default function RotaEditor() {
                     </div>
                 </SheetContent>
             </Sheet>
+
+            {/* Blockers modal — shown when /generate returns success:false */}
+            <Dialog open={blockersOpen} onOpenChange={setBlockersOpen}>
+                <DialogContent data-testid="blockers-dialog">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <AlertCircle className="w-5 h-5 text-destructive" />
+                            Cannot generate — over-constrained
+                        </DialogTitle>
+                        <DialogDescription>{blockers?.reason}</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2 max-h-[420px] overflow-y-auto">
+                        {(blockers?.blocking_constraints || []).map((b, idx) => (
+                            <div key={idx} className="app-card p-3" data-testid={`blocker-${idx}`}>
+                                <div className="text-sm font-semibold">{b.day_of_week} · {b.date}</div>
+                                <ul className="text-xs text-muted-foreground mt-1.5 list-disc list-inside space-y-0.5">
+                                    {(b.problems || []).map((p, i) => <li key={i}>{p}</li>)}
+                                </ul>
+                            </div>
+                        ))}
+                        {(!blockers?.blocking_constraints || blockers.blocking_constraints.length === 0) && (
+                            <div className="text-sm text-muted-foreground py-4">{blockers?.solver_status || "Solver could not find a valid rota."}</div>
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setBlockersOpen(false)} data-testid="blockers-close">Close</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

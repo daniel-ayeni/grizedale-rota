@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
-import { Lock, Save } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Lock, Save, Users as UsersIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
-    Tabs, TabsContent, TabsList, TabsTrigger,
+    Tabs, TabsList, TabsTrigger,
 } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 
@@ -36,11 +40,18 @@ const MODES = [
 
 export default function Rules() {
     const [config, setConfig] = useState(null);
+    const [staff, setStaff] = useState([]);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
-        api.get("/rules").then((r) => setConfig(r.data)).catch((e) => toast.error(formatApiError(e)));
+        Promise.all([
+            api.get("/rules"),
+            api.get("/staff"),
+        ]).then(([rulesRes, staffRes]) => {
+            setConfig(rulesRes.data);
+            setStaff(staffRes.data);
+        }).catch((e) => toast.error(formatApiError(e)));
     }, []);
 
     if (!config) return <div className="text-sm text-muted-foreground" data-testid="rules-loading">Loading rules…</div>;
@@ -159,7 +170,14 @@ export default function Rules() {
                                         onValueChange={(v) => setWeight(rd.key, v[0])}
                                         data-testid={`rule-${rd.key}-weight-slider`}
                                     />
-                                    {rd.hasParams && (
+                                    {rd.hasParams && rd.key === "overtime_prefer_flexi" && (
+                                        <OvertimeParams
+                                            params={r.params || {}}
+                                            staff={staff}
+                                            setParam={(k, v) => setParam(rd.key, k, v)}
+                                        />
+                                    )}
+                                    {rd.hasParams && rd.key !== "overtime_prefer_flexi" && (
                                         <div className="mt-4 grid grid-cols-2 gap-3" data-testid={`rule-${rd.key}-params`}>
                                             <div>
                                                 <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">Preferred staff initials</label>
@@ -191,6 +209,119 @@ export default function Rules() {
                         </div>
                     );
                 })}
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Overtime preference params editor.
+ *
+ * The rule auto-detects flexi staff by role name (default "Flexi") so when
+ * staff are added or have their role updated the rule "follows them" without
+ * needing to manually edit initials. An optional override list is also
+ * supported — leaving it empty means "use auto-detect".
+ */
+function OvertimeParams({ params, staff, setParam }) {
+    const role = params.applies_to_role || "Flexi";
+    const override = Array.isArray(params.staff_initials_override) ? params.staff_initials_override : [];
+    const cap = params.weekly_cap ?? 48;
+
+    const roles = useMemo(() => {
+        const set = new Set();
+        for (const s of staff) if (s.role) set.add(s.role);
+        if (!set.has(role)) set.add(role);
+        return Array.from(set).sort();
+    }, [staff, role]);
+
+    const autoDetected = useMemo(
+        () => staff.filter((s) => s.active !== false && s.role === role).map((s) => s.initials),
+        [staff, role],
+    );
+
+    const effective = override.length > 0 ? override : autoDetected;
+
+    const toggleOverride = (initials, checked) => {
+        const next = new Set(override);
+        if (checked) next.add(initials); else next.delete(initials);
+        setParam("staff_initials_override", Array.from(next));
+    };
+
+    return (
+        <div className="mt-4 space-y-4" data-testid="rule-overtime_prefer_flexi-params">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
+                        Auto-detect by role
+                    </label>
+                    <Select value={role} onValueChange={(v) => setParam("applies_to_role", v)}>
+                        <SelectTrigger data-testid="rule-overtime_prefer_flexi-role">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {roles.map((r) => (
+                                <SelectItem key={r} value={r}>{r}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+                <div>
+                    <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
+                        Weekly cap (hours)
+                    </label>
+                    <input
+                        type="number"
+                        min={0}
+                        max={80}
+                        className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                        style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                        value={cap}
+                        onChange={(e) => setParam("weekly_cap", Number(e.target.value))}
+                        data-testid="rule-overtime_prefer_flexi-param-cap"
+                    />
+                </div>
+            </div>
+
+            <div className="rounded-md p-3 text-xs flex items-start gap-2"
+                 style={{ background: "hsl(var(--bg-elev))", border: "1px solid hsl(var(--border))" }}
+                 data-testid="rule-overtime_prefer_flexi-effective">
+                <UsersIcon className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <div>
+                    <span className="uppercase tracking-wider text-muted-foreground mr-1">Currently rewarding overtime to:</span>
+                    {effective.length > 0
+                        ? effective.map((i) => (
+                            <Badge key={i} variant="outline" className="mr-1 text-[10px]" data-testid={`overtime-effective-${i}`}>{i}</Badge>
+                        ))
+                        : <span className="text-muted-foreground">— nobody (no staff matches role &amp; no override set)</span>}
+                    <div className="text-muted-foreground mt-1">
+                        {override.length > 0
+                            ? "Using manual override list (below). Uncheck all to fall back to auto-detect."
+                            : `Auto-detected from role "${role}". Tick boxes below to override.`}
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">
+                    Override staff (optional)
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {staff.filter((s) => s.active !== false).map((s) => (
+                        <label
+                            key={s.initials}
+                            className="flex items-center gap-2 text-sm px-2 py-1.5 rounded cursor-pointer"
+                            style={{ background: "hsl(var(--bg-elev))" }}
+                            data-testid={`overtime-override-${s.initials}`}
+                        >
+                            <Checkbox
+                                checked={override.includes(s.initials)}
+                                onCheckedChange={(c) => toggleOverride(s.initials, !!c)}
+                            />
+                            <span className="font-mono text-xs">{s.initials}</span>
+                            <span className="text-muted-foreground text-xs truncate">{s.role || "—"}</span>
+                        </label>
+                    ))}
+                </div>
             </div>
         </div>
     );

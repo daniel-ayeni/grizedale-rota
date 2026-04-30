@@ -140,12 +140,13 @@ RULES: list[dict] = [
     {
         "id": "overtime_prefer_flexi",
         "name": "Overtime preference → flexi staff",
-        "description": "When extra hours are needed above contracted minimums, prefer giving them to the flexi staff (default D.A.) up to a weekly cap (default 48h, UK WTR).",
+        "description": "When extra hours are needed above contracted minimums, prefer giving them to staff with the Flexi role (auto-detected). Use staff_initials_override to narrow it further.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 15,
         "params_default": {
-            "preferred_staff_initials": "D.A.",
+            "applies_to_role": "Flexi",
+            "staff_initials_override": [],
             "weekly_cap": 48,
         },
     },

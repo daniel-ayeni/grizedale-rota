@@ -147,6 +147,30 @@ async def seed_if_empty(db) -> dict:
                 logger.info("Migration: bumped rules.%s.%s from %s -> %s", rid, field, old_val, new_val)
                 summary[f"migration_bump_{rid}_{field}"] = 1
 
+        # MIGRATION: convert legacy overtime_prefer_flexi.params from
+        # {preferred_staff_initials} → {applies_to_role, staff_initials_override}
+        ot_entry = (rules_doc.get("rules") or {}).get("overtime_prefer_flexi") or {}
+        ot_params = ot_entry.get("params") or {}
+        if "preferred_staff_initials" in ot_params and "applies_to_role" not in ot_params:
+            legacy_value = ot_params.get("preferred_staff_initials")
+            new_params = {
+                "applies_to_role": "Flexi",
+                "staff_initials_override": [],  # leave empty so auto-detect kicks in
+                "weekly_cap": int(ot_params.get("weekly_cap", 48)),
+            }
+            await db.rules_config.update_one(
+                {},
+                {"$set": {
+                    "rules.overtime_prefer_flexi.params": new_params,
+                    "updated_at": _now_iso(),
+                }},
+            )
+            logger.info(
+                "Migration: overtime_prefer_flexi.params converted (legacy preferred_staff_initials=%s discarded; auto-detect by role='Flexi')",
+                legacy_value,
+            )
+            summary["migration_overtime_params"] = 1
+
     # service users (7 placeholders)
     if await db.service_users.count_documents({}) == 0:
         placeholders = []

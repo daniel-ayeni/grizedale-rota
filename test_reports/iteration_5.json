@@ -1,0 +1,42 @@
+{
+  "summary": "Phase 3 (Generate Rota) end-to-end testing complete. 7/7 backend pytest in test_phase3_generate.py PASS in 5.13s (fresh /generate, locked preservation, AL preservation, over-constrained 422, Flexi overtime absorption, /api/rules shape, PUT /rules round-trip). Frontend Playwright PASS for: Dashboard 'Generate Rota' dialog → 'Open editor' navigates to /rotas/{id} ✓; RotaEditor 'Generate Rota' AlertDialog → solver runs and grid re-renders with 222 filled cells ✓; Paper-theme cell colors match spec exactly (shift-D=#FFFBE8, shift-Dstar=#FFF3B0, shift-N=#D6E6F2); Rules → Overtime card → Soft mode → OvertimeParams renders with role='Flexi', weekly_cap=48, D.A.+T.D. effective badges, 8 override checkboxes; ticking D.A. narrows effective to D.A. only; Save shows 'Rules saved — solver will use these on next generate' toast.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar footer", "issues": ["Still says 'Phase 2 · v0.3.0' — could bump to 'Phase 3 · v0.4.0' now that /generate is shipped. Carry-over from iter_4."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_generate.py",
+    "/app/test_reports/pytest/phase3_results.xml"
+  ],
+  "action_items": [
+    "Optional: bump sidebar footer from 'Phase 2 · v0.3.0' to Phase 3."
+  ],
+  "critical_code_review_comments": [
+    "POST /api/rotas/{id}/generate cleanly merges solver output with locked cells (server.py L731-746) and returns full validation_report — exemplary endpoint design.",
+    "Rules.jsx OvertimeParams component is well-built: useMemo for role list & auto-detect, override-list semantics ('empty = auto-detect') clearly documented in JSDoc, all elements have data-testid (overtime-effective-{init}, overtime-override-{init}, role select, cap input). Ready for production.",
+    "Frontend correctly auto-triggers solver via ?generate=1 query param after navigating from Dashboard (verified by 222 filled cells on grid re-render).",
+    "Backend issues from iter_4 (prefer_dstar_over_star weight, non_flexi_overage) were NOT in scope for this iteration and were not retested per instructions."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase3_generate.py",
+    "/app/test_reports/iteration_5.json",
+    "/app/test_reports/pytest/phase3_results.xml"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 pytest)",
+    "frontend": "100% (all 4 frontend flows verified)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "Tests create-and-cleanup TEST_phase3_* rotas (4 of them) and ephemeral leave rows for A.A./J.C./L.M./L.D./D.A./T.D./C.E. on 2026-08-03 and 2026-09-07. All deleted in finally blocks. PUT /rules round-trip restores original overtime_prefer_flexi block on teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression file: /app/backend/tests/test_phase3_generate.py (run with REACT_APP_BACKEND_URL=<public_url> python -m pytest backend/tests/test_phase3_generate.py -v). Wall time ~5s. Fresh /generate yields ~5-6s solver wall. Note shift-star (sleepover '*') CSS class was not present in the generated rota DOM during testing — this is data-driven (solver simply did not assign any '*' shifts in this run, which is consistent with the iter_4 finding that *+N pairs are still chosen sometimes; on a different seed it may appear). The CSS rule for .shift-star (#FFE066 bright yellow) exists in index.css but was not assertable via getComputedStyle since no element carried the class. Iter_4 backend bugs (prefer_dstar_over_star weight=25, non_flexi_overage not enforced) remain unaddressed but were explicitly out of Phase 3 scope.",
+  "rca_of_the_issue": "N/A — no Phase 3 bugs found. All assertions match the main agent's pre-test curl results (224 assignments, 0 hard violations, OPTIMAL, locked & leave preservation, INFEASIBLE on over-constrained input, D.A.+T.D. both absorb overtime, applies_to_role=Flexi rule shape, OvertimeParams UI fully functional)."
+}

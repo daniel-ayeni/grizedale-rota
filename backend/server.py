@@ -667,6 +667,103 @@ async def copy_from_previous(rota_id: str, current=Depends(auth_required)):
     }
 
 
+@api.post("/rotas/{rota_id}/generate")
+async def generate_rota(rota_id: str, current=Depends(auth_required)):
+    """Run the CP-SAT solver to fill the rota. Preserves locked cells, AL,
+    and TRN. Accepted non-OFF requests become soft preferences."""
+    rota = await _load_rota(rota_id)
+    weeks = int(rota.get("weeks", 4))
+    start_date = rota["start_date"]
+    end_dt = datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=weeks * 7 - 1)
+    end_date = end_dt.strftime("%Y-%m-%d")
+
+    # 1. Build base solver payload from Mongo state
+    payload = await build_solver_payload(db, override_start_date=start_date)
+    payload["weeks"] = weeks
+
+    # 2. Locked cells from rota.assignments where locked=True
+    locked_cells = [
+        {"staff_initials": a["staff_initials"], "date": a["date"], "shift": a["shift"]}
+        for a in (rota.get("assignments") or [])
+        if a.get("locked") and a.get("shift")
+    ]
+    payload["locked_cells"] = locked_cells
+
+    # 3. AL / TRN cells from `leave` collection within the date window
+    leave_docs = await db.leave.find(
+        {"date": {"$gte": start_date, "$lte": end_date}}, {"_id": 0}
+    ).to_list(10000)
+    payload["leave"] = [
+        {
+            "staff_initials": l_["staff_initials"],
+            "date": l_["date"],
+            "type": l_["type"] if l_["type"] in {"AL", "TRN"} else "AL",
+        }
+        for l_ in leave_docs
+        if l_.get("type") in {"AL", "TRN", "OFF_REQ"}
+    ]
+
+    # 4. Accepted non-OFF requests → soft preferences
+    accepted_reqs = await db.requests.find(
+        {
+            "status": "accepted",
+            "date": {"$gte": start_date, "$lte": end_date},
+            "shift_preference": {"$nin": ["OFF"]},
+        },
+        {"_id": 0},
+    ).to_list(10000)
+    payload["accepted_requests"] = accepted_reqs
+
+    # 5. Solve
+    time_limit = int(payload.get("solver_time_limit_s", 12))
+    result = solve_rota(payload, time_limit_s=time_limit)
+
+    if not result.get("success"):
+        return JSONResponse(status_code=422, content={
+            "success": False,
+            "reason": result.get("reason"),
+            "blocking_constraints": result.get("blocking_constraints", []),
+            "solver_status": result.get("solver_status"),
+            "solve_time_ms": result.get("solve_time_ms"),
+        })
+
+    # 6. Merge solver output into rota.assignments, preserving locked cells
+    locked_keys = {(a["date"], a["staff_initials"]) for a in (rota.get("assignments") or []) if a.get("locked")}
+    existing_by_key = {(a["date"], a["staff_initials"]): a for a in (rota.get("assignments") or [])}
+    new_assignments = []
+    for day in result["rota"]:
+        for a in day["assignments"]:
+            key = (day["date"], a["staff_initials"])
+            if key in locked_keys:
+                # Preserve the locked cell exactly (including any reason/etc.)
+                new_assignments.append(existing_by_key[key])
+            else:
+                new_assignments.append({
+                    "date": day["date"],
+                    "staff_initials": a["staff_initials"],
+                    "shift": a["shift"],
+                    "locked": False,
+                })
+
+    await db.rotas.update_one(
+        {"id": rota_id},
+        {"$set": {"assignments": new_assignments, "updated_at": _now()}},
+    )
+    rota["assignments"] = new_assignments
+    report = await _validate_rota_doc(rota)
+    return {
+        "success": True,
+        "assignments_count": len(new_assignments),
+        "soft_violations_score": result.get("soft_violations_score"),
+        "solve_time_ms": result.get("solve_time_ms"),
+        "solver_status": result.get("solver_status"),
+        "validation_report": report,
+        "warnings": result.get("warnings", []),
+        "locked_preserved": len(locked_keys),
+        "leave_preserved": len(payload["leave"]),
+    }
+
+
 # ============================================================================
 # Leave (Phase 2)
 # ============================================================================
