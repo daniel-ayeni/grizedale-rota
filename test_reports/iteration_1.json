@@ -1,0 +1,51 @@
+{
+  "summary": "Phase 0 backend testing of Grizedale rota solver. Tested all 3 endpoints (/api/health, /api/solver/seed, /api/solver/generate) plus /api/docs and /api/openapi.json. Validated hard rules (cover counts, med/FA per shift, no-male-pair, capability flags, consecutive-day rules), forced cells (locked + AL), input validation (400), over-constrained handling (422), and the manager weekday soft-penalty. 14/14 pytest tests pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/solver/generate",
+        "issue": "Seed limitation (NOT a code bug): C.E. is the ONLY medication-competent staff who can also do nights/sleepover (J.C./L.M./L.D./T.D. all have can_do_nights=false, A.A. and J.R. are not med_competent). Putting C.E. on AL on any single day makes night-shift med coverage infeasible -> solver correctly returns 422 with reason 'no medication-competent staff available for night shift'. Main-agent's spec test expected 200 for {C.E., 2026-04-22, AL}; that scenario is mathematically infeasible with this seed. I added a replacement test using D.A. on AL to verify the AL mechanism itself, and a separate test asserting the C.E. case correctly returns 422."
+      },
+      {
+        "endpoint": "POST /api/solver/generate (over-constrained 422)",
+        "issue": "FastAPI HTTPException would wrap the body under {detail: ...}, but the implementation uses JSONResponse(status_code=422, content=result), so the failure body is returned at the top level (success/reason/blocking_constraints). Tests handle both shapes; no fix needed."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rota_solver.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Decide on the C.E.-AL test case: either (a) accept that med-competent night coverage is a hard bottleneck of the current seed and update the spec to use D.A./A.A. for AL examples, or (b) add med_competent=true to A.A. or another night-capable staff so the rota can absorb a single C.E. AL day without going infeasible. This will also affect Phase 1+ realism — only one med-competent staff covering 28 nights leaves zero buffer for sickness/holiday.",
+    "Optional polish: solver/generate currently returns 400 via HTTPException (body = {detail: '...'}) but 422 via JSONResponse (body at top-level). Consider unifying so clients see a consistent envelope (e.g. always {success, reason, ...}).",
+    "Manager soft-penalty (W_MANAGER_WEEKDAY=10000) is dominating other terms — verified J.C. is OFF on every Mon-Fri in the optimal solution, as required."
+  ],
+  "critical_code_review_comments": [
+    "rota_solver.py is ~450 lines and self-contained — fine for Phase 0 but should be split into model_builder / objective / response modules before adding Phase 1 features.",
+    "Hours soft penalty (W_HOURS_DEVIATION=5) is symmetric (over and under same weight). For UK care-home compliance it might matter more to under-staff than over — flag for product owner.",
+    "POST /api/solver/generate accepts dict[str, Any] with no Pydantic schema. Phase 0 acceptable, but for Phase 1 a typed RotaRequest model would surface bad input earlier and improve /api/docs.",
+    "MongoDB client is initialised at import time even though Phase 0 doesn't use it; a missing MONGO_URL would crash the whole app on boot. Acceptable since env is set, but worth wrapping when Phase 1 adds optional persistence.",
+    "_build_failure_response() iterates each day for blocking analysis but doesn't account for cross-day constraints (consecutive-day, weekly hours) — its own docstring says so. Good enough for Phase 0 but list it as known limitation in PRD.",
+    "Solver uses num_search_workers=8 with max_time_in_seconds=10. With seed it solves in <30 ms so no concern; once seed grows, ensure deterministic seed for reproducible tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rota_solver.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "n/a (backend-only phase)"
+  },
+  "test_credentials": "n/a (no auth in Phase 0)",
+  "seed_data_creation": "Used /app/backend/seed/grizedale.json as-is. Test cases mutate copies in-memory; seed file untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 14 pytest tests in /app/backend/tests/test_rota_solver.py pass against the public REACT_APP_BACKEND_URL. Solver wall-time is consistently <100 ms with the seed (well under 15s SLA). Endpoints covered: GET /api/health, GET /api/solver/seed, GET /api/docs, GET /api/openapi.json, POST /api/solver/generate (success path, capability flags, consecutive-day rules, locked cells, AL mechanism, over-constrained 422, missing-field 400, manager weekday soft penalty). The C.E.-AL spec scenario was replaced with an equivalent test using D.A. because the seed has only one med-competent night-capable staff (C.E.); see backend_issues.minor for details.",
+  "rca_of_the_issue": "Spec test 'C.E. AL on 2026-04-22 returns 200' fails because the seed contains only one staff member (C.E.) who satisfies BOTH medication_competent=true AND (can_do_nights or can_do_sleepover)=true. Hard rule 'every night must have >=1 med-competent staff' therefore depends entirely on C.E. for night cover. Removing her for any single day makes the model INFEASIBLE — solver correctly responds 422 with blocking_constraint 'no medication-competent staff available for night shift'. Mitigation: either change the spec to use a non-bottleneck staff (e.g. D.A.) or expand the seed (e.g. set A.A.medication_competent=true) before re-running this assertion."
+}
