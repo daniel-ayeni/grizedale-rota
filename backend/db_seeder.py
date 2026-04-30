@@ -132,6 +132,21 @@ async def seed_if_empty(db) -> dict:
             logger.info("Migration: added %s rule to rules_config", rule_id)
             summary[f"migration_rule_{rule_id}"] = 1
 
+        # MIGRATION: bump stale defaults from earlier Phase 2 commits to
+        # current values (only updates if still at old default).
+        stale_bumps = [
+            ("prefer_dstar_over_star", "weight", 25, 200),
+            ("non_flexi_overage", "mode", "soft", "hard"),
+        ]
+        for rid, field, old_val, new_val in stale_bumps:
+            res = await db.rules_config.update_one(
+                {f"rules.{rid}.{field}": old_val},
+                {"$set": {f"rules.{rid}.{field}": new_val, "updated_at": _now_iso()}},
+            )
+            if res.modified_count > 0:
+                logger.info("Migration: bumped rules.%s.%s from %s -> %s", rid, field, old_val, new_val)
+                summary[f"migration_bump_{rid}_{field}"] = 1
+
     # service users (7 placeholders)
     if await db.service_users.count_documents({}) == 0:
         placeholders = []

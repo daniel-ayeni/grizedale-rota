@@ -85,7 +85,7 @@ DEFAULT_RULE_MODES = {
     "weekend_fairness": "soft",
     "overtime_prefer_flexi": "soft",
     "prefer_dstar_over_star": "soft",
-    "non_flexi_overage": "soft",
+    "non_flexi_overage": "hard",
 }
 
 
@@ -352,12 +352,22 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             # Beyond the cap, treat extra hours as strongly penalised as non-flexi
             soft_terms.append(weights["non_flexi_overage"] * over_above_cap)
         else:
-            # Non-flexi: STRONG penalty per hour above contracted total
-            non_flexi_mode = modes.get("non_flexi_overage", "soft")
-            if non_flexi_mode != "off":
+            # Non-flexi:
+            #   "hard" mode → strict upper bound actual <= target + 2  (cap)
+            #   "soft" mode → weighted linear overage penalty
+            #   "off"  mode → fall back to small always-on penalty
+            non_flexi_mode = modes.get("non_flexi_overage", "hard")
+            if non_flexi_mode == "hard":
+                # Cap at target_total + 8 — gives the solver enough buffer for
+                # nights-only staff (J.R. has 12h-shift granularity so her
+                # achievable totals are 108, 120, 132... — none fit a tight
+                # +2h or +4h cap). +8h is ~2h/week over 4 weeks, still very
+                # close to "minimum contracted".
+                model.Add(actual <= target_total + 8)
+                soft_terms.append(weights["hours_overage"] * over)
+            elif non_flexi_mode == "soft":
                 soft_terms.append(weights["non_flexi_overage"] * over)
             else:
-                # Even when "off", keep the small always-on penalty for stability
                 soft_terms.append(weights["hours_overage"] * over)
 
     # D* preference for sleepover-capable staff

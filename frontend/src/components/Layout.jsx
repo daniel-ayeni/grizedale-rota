@@ -87,7 +87,7 @@ export default function Layout() {
                     ))}
                 </nav>
                 <div className="px-5 py-4 text-xs text-muted-foreground border-t" style={{ borderColor: "hsl(var(--border))" }}>
-                    Phase 1 · v0.2.0
+                    Phase 2 · v0.3.0
                 </div>
             </aside>
 

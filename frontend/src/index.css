@@ -195,46 +195,27 @@ html[data-theme="modern"] .section-header {
 .pill-off       { background: hsl(var(--muted));               color: hsl(var(--fg-muted)); }
 
 /* =====================================================================
-   ROTA GRID — paper-style visual matching the original photos
+   ROTA GRID — paper-style visual matching the original photos exactly
+   Layout: 2 header rows (day-letters + date-numbers) + N staff rows.
+   Left column = peach identity cells. Body = white cells with handwriting font.
    ===================================================================== */
 
-/* Page-level rota title (Paper-only italic blue, like the photo) */
 .rota-paper-title {
     text-align: center;
     font-family: 'Lora', Georgia, serif;
     font-style: italic;
     font-weight: 600;
-    font-size: 1.6rem;
-    letter-spacing: 0.02em;
-    color: hsl(220 80% 32%);
-    margin: 0 0 0.25rem 0;
-    text-transform: uppercase;
+    font-size: 1.4rem;
+    letter-spacing: 0.01em;
+    color: hsl(220 80% 28%);
+    margin: 0 0 0.5rem 0;
 }
 html[data-theme="modern"] .rota-paper-title {
     font-family: 'Inter', sans-serif;
     font-style: normal;
-    text-transform: none;
     color: hsl(var(--fg));
     text-align: left;
-    font-size: 1.5rem;
-}
-
-.rota-paper-subtitle {
-    text-align: center;
-    font-family: 'Lora', Georgia, serif;
-    font-style: italic;
-    font-weight: 500;
-    font-size: 1rem;
-    color: hsl(220 60% 40%);
-    letter-spacing: 0.04em;
-    margin-bottom: 0.75rem;
-}
-html[data-theme="modern"] .rota-paper-subtitle {
-    font-family: 'Inter', sans-serif;
-    font-style: normal;
-    color: hsl(var(--fg-muted));
-    text-align: left;
-    font-size: 0.875rem;
+    font-size: 1.25rem;
 }
 
 .shift-cell {
@@ -243,13 +224,13 @@ html[data-theme="modern"] .rota-paper-subtitle {
     align-items: center;
     justify-content: center;
     width: 100%;
-    height: 38px;
+    height: 40px;
     font-family: 'Caveat', 'Patrick Hand', cursive;
-    font-size: 1.25rem;
+    font-size: 1.4rem;
     font-weight: 700;
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--bg-elev));
-    color: hsl(var(--fg));
+    border: 1px solid hsl(0 0% 25%);
+    background: hsl(0 0% 100%);
+    color: hsl(0 0% 12%);
     cursor: pointer;
     user-select: none;
     transition: filter .12s, transform .12s;
@@ -258,26 +239,31 @@ html[data-theme="modern"] .shift-cell {
     font-family: 'Inter', sans-serif;
     font-size: 0.78rem;
     font-weight: 600;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--bg-elev));
+    color: hsl(var(--fg));
 }
 .shift-cell:hover { filter: brightness(0.97); }
 .shift-cell:active { transform: scale(0.98); }
 
-.shift-blank   { background: hsl(var(--bg-elev)); color: transparent; }
-.shift-D       { background: hsl(var(--bg-elev)); color: hsl(var(--fg)); }
-.shift-Dstar   { background: hsl(48 100% 92%);   color: hsl(35 100% 22%); }
-.shift-N       { background: hsl(var(--bg-elev)); color: hsl(220 80% 32%); }
-.shift-star    { background: hsl(48 100% 60%);   color: hsl(35 100% 18%); }
-.shift-OFF     { background: hsl(var(--bg-elev)); color: transparent; }  /* OFF renders BLANK */
+.shift-blank   { background: hsl(0 0% 100%); color: transparent; }
+.shift-D       { background: hsl(0 0% 100%); color: hsl(0 0% 12%); }
+.shift-Dstar   { background: hsl(48 100% 92%); color: hsl(35 100% 22%); }
+.shift-N       { background: hsl(0 0% 100%); color: hsl(220 80% 32%); }
+.shift-star    { background: hsl(48 100% 60%); color: hsl(35 100% 18%); }
+.shift-OFF     { background: hsl(0 0% 100%); color: transparent; }  /* OFF renders BLANK */
 .shift-AL      { background: hsl(var(--accent-pink) / .55); color: hsl(var(--accent-pink) / 1); }
 .shift-TRN     { background: hsl(var(--accent-red) / .55);  color: hsl(0 75% 30%); }
 
+html[data-theme="modern"] .shift-blank { background: hsl(var(--bg-elev)); }
+html[data-theme="modern"] .shift-D     { background: hsl(var(--bg-elev)); color: hsl(var(--fg)); }
 html[data-theme="modern"] .shift-Dstar { background: hsl(38 92% 88%);  color: hsl(38 92% 28%); }
 html[data-theme="modern"] .shift-N     { background: hsl(199 89% 90%); color: hsl(199 89% 28%); }
 html[data-theme="modern"] .shift-star  { background: hsl(38 92% 75%);  color: hsl(38 92% 22%); }
+html[data-theme="modern"] .shift-OFF   { background: hsl(var(--bg-elev)); color: transparent; }
 html[data-theme="modern"] .shift-AL    { background: hsl(339 82% 92%); color: hsl(339 82% 38%); }
 html[data-theme="modern"] .shift-TRN   { background: hsl(0 75% 92%);   color: hsl(0 75% 38%); }
 
-/* On-call chip inside a shift cell (small blue annotation) */
 .shift-cell .oncall-chip {
     position: absolute;
     bottom: 1px;
@@ -294,22 +280,6 @@ html[data-theme="modern"] .shift-TRN   { background: hsl(0 75% 92%);   color: hs
     text-transform: uppercase;
 }
 
-/* Weekend-off chip (small purple WO annotation on Saturday cells) */
-.shift-cell .wo-chip {
-    position: absolute;
-    top: 1px;
-    left: 2px;
-    background: hsl(var(--accent-purple));
-    color: white;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.5rem;
-    font-weight: 700;
-    line-height: 1;
-    padding: 1px 3px;
-    border-radius: 3px;
-}
-
-/* Locked cell — small lock icon + slightly darker tint */
 .shift-cell.locked::after {
     content: "🔒";
     position: absolute;
@@ -319,209 +289,205 @@ html[data-theme="modern"] .shift-TRN   { background: hsl(0 75% 92%);   color: hs
     opacity: 0.7;
 }
 .shift-cell.locked { box-shadow: inset 0 0 0 2px hsl(var(--fg) / .25); }
-
-/* Hard-rule violation */
 .shift-cell.violation-hard { box-shadow: inset 0 0 0 2px hsl(var(--accent-red)); }
 .shift-cell.violation-soft { box-shadow: inset 0 0 0 2px hsl(var(--accent-yellow)); }
 
-/* Grid layout — legend strip + staff column + 28 day cells */
-.rota-grid {
-    display: grid;
-    grid-template-columns: 36px 160px repeat(28, minmax(40px, 1fr));
-    gap: 0;
-    background: hsl(var(--bg-elev));
-    border: 1.5px solid hsl(var(--fg) / .35);
+/* Wrapper provides horizontal scrolling */
+.rota-grid-wrap {
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
     border-radius: 0;
 }
+
+.rota-grid {
+    display: grid;
+    grid-template-columns: 160px repeat(28, minmax(40px, 1fr));
+    gap: 0;
+    background: hsl(0 0% 100%);
+    border: 1.5px solid hsl(0 0% 25%);
+    min-width: max-content;
+}
 html[data-theme="modern"] .rota-grid {
+    background: hsl(var(--bg-elev));
     border: 1px solid hsl(var(--border-strong));
     border-radius: var(--radius);
 }
 .rota-grid > * {
+    border-right: 1px solid hsl(0 0% 25%);
+    border-bottom: 1px solid hsl(0 0% 25%);
+}
+html[data-theme="modern"] .rota-grid > * {
     border-right: 1px solid hsl(var(--border));
     border-bottom: 1px solid hsl(var(--border));
 }
 .rota-grid > .week-divider {
-    border-right: 3px solid hsl(var(--accent-pink));
+    border-right: 3px solid hsl(0 0% 12%);
 }
 html[data-theme="modern"] .rota-grid > .week-divider {
     border-right: 2px solid hsl(var(--border-strong));
 }
 
-/* Header cells — orange band in paper, slate-50 in modern */
-.rota-header-cell {
-    background: hsl(var(--section));
-    color: white;
-    padding: 6px 4px;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.7rem;
-    font-weight: 700;
+/* ===== Two-row header (day-letter + date-number) ===== */
+/* The corner cells span both header rows visually with same peach colour. */
+.rota-corner-cell {
+    background: hsl(22 86% 75%);
+    border: 1px solid hsl(0 0% 25%) !important;
+}
+html[data-theme="modern"] .rota-corner-cell {
+    background: hsl(210 40% 96%);
+    border: 1px solid hsl(var(--border)) !important;
+}
+.rota-corner-cell-bottom {
+    /* second-row corner — same colour, hides the inner border */
+    border-top: 0 !important;
+}
+
+.rota-header-day, .rota-header-date {
+    background: hsl(22 86% 75%);
+    color: hsl(0 0% 12%);
     text-align: center;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    line-height: 1.2;
-}
-.rota-header-cell .day-letter {
-    display: block;
-    font-size: 0.85rem;
+    font-family: 'Inter', sans-serif;
     font-weight: 700;
+    padding: 4px 2px;
+    position: relative;
 }
-.rota-header-cell .day-num {
-    display: block;
-    font-size: 0.78rem;
-    font-weight: 600;
-    margin-top: 1px;
-    opacity: 0.95;
-}
-.rota-header-cell.weekend { background: hsl(22 86% 60%); }
-html[data-theme="modern"] .rota-header-cell {
+.rota-header-day  { font-size: 0.85rem; line-height: 1.1; }
+.rota-header-date { font-size: 0.78rem; border-top: 0 !important; }
+
+html[data-theme="modern"] .rota-header-day,
+html[data-theme="modern"] .rota-header-date {
     background: hsl(210 40% 96%);
     color: hsl(var(--fg-muted));
-    border-bottom: 1px solid hsl(var(--border));
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.7rem;
 }
-html[data-theme="modern"] .rota-header-cell.weekend {
+
+/* Weekend header tint — slightly darker peach to subtly mark Sat/Sun */
+.rota-header-day.weekend, .rota-header-date.weekend {
+    background: hsl(22 86% 68%);
+}
+html[data-theme="modern"] .rota-header-day.weekend,
+html[data-theme="modern"] .rota-header-date.weekend {
     background: hsl(220 14% 92%);
 }
 
-/* Top-of-column markers (med cycle, request count, pay cut off, holiday) */
-.rota-header-cell .marker-row {
+.header-marker-row {
+    position: absolute;
+    bottom: 1px;
+    left: 0; right: 0;
     display: flex;
     justify-content: center;
     gap: 2px;
-    margin-top: 2px;
-    min-height: 8px;
 }
-.rota-header-cell .marker-dot {
-    width: 7px;
-    height: 7px;
+.marker-dot {
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    box-shadow: 0 0 0 1px hsl(var(--bg-elev) / .5);
-}
-
-/* Staff identity column */
-.rota-row-label {
-    background: hsl(var(--bg-elev));
-    padding: 6px 8px;
-    font-size: 0.78rem;
-    position: sticky;
-    left: 0;
-    z-index: 1;
-    line-height: 1.2;
-}
-.rota-row-label .role-tag {
-    display: block;
-    font-size: 0.62rem;
-    color: hsl(var(--fg-muted));
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-weight: 600;
-}
-.rota-row-label .name-tag {
     display: inline-block;
-    font-family: 'Lora', Georgia, serif;
+}
+
+/* Lavender flag at top of column for first-Friday med-cycle marker */
+.med-cycle-flag {
+    position: absolute;
+    top: 1px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid hsl(280 50% 70%);
+}
+
+/* ===== Left identity cells (peach background, two-line content) ===== */
+.rota-identity-cell {
+    background: hsl(22 86% 78%);
+    color: hsl(0 0% 12%);
+    padding: 4px 6px;
+    font-family: 'Inter', sans-serif;
     font-weight: 600;
-    font-size: 0.95rem;
-    margin-right: 4px;
-}
-html[data-theme="modern"] .rota-row-label .name-tag {
-    font-family: 'Inter', sans-serif;
-    font-size: 0.85rem;
-}
-.rota-row-label .hours-tag {
-    color: hsl(var(--fg-muted));
-    font-size: 0.75rem;
-    font-weight: 500;
-}
-
-/* Header cell for the staff identity column ("Staff" label, orange) */
-.rota-header-cell-staff {
-    background: hsl(var(--section));
-    color: white;
-    padding: 6px 8px;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    text-align: left;
-}
-html[data-theme="modern"] .rota-header-cell-staff {
-    background: hsl(210 40% 96%);
-    color: hsl(var(--fg-muted));
-}
-
-/* Left vertical legend strip — vertical colored blocks with rotated labels */
-.rota-legend-cell {
-    padding: 0;
-    position: relative;
+    line-height: 1.15;
     display: flex;
-    align-items: center;
+    flex-direction: column;
     justify-content: center;
 }
-.rota-legend-cell .legend-label {
-    transform: rotate(-90deg);
-    white-space: nowrap;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.62rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: hsl(0 0% 100%);
-    text-shadow: 0 1px 1px hsl(0 0% 0% / .25);
-}
-.rota-legend-cell.legend-paycut .legend-label,
-.rota-legend-cell.legend-bus .legend-label,
-.rota-legend-cell.legend-request .legend-label,
-.rota-legend-cell.legend-medcycle .legend-label,
-.rota-legend-cell.legend-firstaider .legend-label {
-    color: hsl(0 0% 12%);
-    text-shadow: none;
-}
-.rota-legend-cell.legend-firstaider { background: hsl(var(--accent-green) / .85); }
-.rota-legend-cell.legend-firstaider .legend-label { color: white; text-shadow: 0 1px 1px hsl(0 0% 0% / .3); }
-.rota-legend-cell.legend-al        { background: hsl(var(--accent-pink) / .65); }
-.rota-legend-cell.legend-trn       { background: hsl(var(--accent-red) / .7); }
-.rota-legend-cell.legend-oncall    { background: hsl(var(--accent-bright-blue) / .85); }
-.rota-legend-cell.legend-sleep     { background: hsl(48 100% 60%); }
-.rota-legend-cell.legend-paycut    { background: hsl(45 30% 80%); }
-.rota-legend-cell.legend-weekend   { background: hsl(var(--accent-purple) / .75); }
-.rota-legend-cell.legend-medcycle  { background: hsl(280 50% 88%); }
-.rota-legend-cell.legend-bus       { background: hsl(220 14% 88%); }
-.rota-legend-cell.legend-request   { background: hsl(220 14% 78%); }
-
-html[data-theme="modern"] .rota-legend-cell {
+html[data-theme="modern"] .rota-identity-cell {
     background: hsl(var(--bg-elev));
-    border-right: 1px solid hsl(var(--border));
+    color: hsl(var(--fg));
 }
-html[data-theme="modern"] .rota-legend-cell .legend-label {
-    color: hsl(var(--fg-muted)) !important;
-    font-size: 0.55rem;
-    text-shadow: none;
+
+.rota-identity-cell .ident-role {
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: hsl(0 0% 18%);
+    margin-bottom: 2px;
 }
-html[data-theme="modern"] .rota-legend-cell::before {
-    content: "";
-    position: absolute;
-    left: 4px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 6px;
-    height: 60%;
+html[data-theme="modern"] .rota-identity-cell .ident-role {
+    color: hsl(var(--fg-muted));
+}
+
+.rota-identity-cell .ident-name-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+.rota-identity-cell .ident-initials {
+    font-family: 'Lora', Georgia, serif;
+    font-size: 1rem;
+    font-weight: 700;
+    color: hsl(0 0% 12%);
+}
+html[data-theme="modern"] .rota-identity-cell .ident-initials {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.9rem;
+}
+.rota-identity-cell .ident-hours {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: hsl(0 0% 25%);
+}
+html[data-theme="modern"] .rota-identity-cell .ident-hours {
+    color: hsl(var(--fg-muted));
+}
+
+/* ===== Horizontal legend strip (BELOW the grid) ===== */
+.rota-legend-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    padding: 0.5rem 0.25rem;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.72rem;
+    color: hsl(var(--fg));
+}
+.rota-legend-strip .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+}
+.rota-legend-strip .legend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
     border-radius: 3px;
+    border: 1px solid hsl(var(--fg) / .25);
+    flex-shrink: 0;
 }
-html[data-theme="modern"] .rota-legend-cell.legend-firstaider::before { background: hsl(var(--accent-green)); }
-html[data-theme="modern"] .rota-legend-cell.legend-al::before { background: hsl(var(--accent-pink)); }
-html[data-theme="modern"] .rota-legend-cell.legend-trn::before { background: hsl(var(--accent-red)); }
-html[data-theme="modern"] .rota-legend-cell.legend-oncall::before { background: hsl(var(--accent-bright-blue)); }
-html[data-theme="modern"] .rota-legend-cell.legend-sleep::before { background: hsl(48 95% 55%); }
-html[data-theme="modern"] .rota-legend-cell.legend-paycut::before { background: hsl(45 30% 80%); }
-html[data-theme="modern"] .rota-legend-cell.legend-weekend::before { background: hsl(var(--accent-purple)); }
-html[data-theme="modern"] .rota-legend-cell.legend-medcycle::before { background: hsl(280 50% 70%); }
-html[data-theme="modern"] .rota-legend-cell.legend-bus::before { background: hsl(220 14% 75%); }
-html[data-theme="modern"] .rota-legend-cell.legend-request::before { background: hsl(220 14% 60%); }
+.rota-legend-strip .legend-swatch.firstaider { background: hsl(var(--accent-green) / .85); }
+.rota-legend-strip .legend-swatch.al        { background: hsl(var(--accent-pink) / .55); }
+.rota-legend-strip .legend-swatch.trn       { background: hsl(var(--accent-red) / .55); }
+.rota-legend-strip .legend-swatch.oncall    { background: hsl(var(--accent-bright-blue) / .85); }
+.rota-legend-strip .legend-swatch.sleep     { background: hsl(48 100% 60%); }
+.rota-legend-strip .legend-swatch.paycut    { background: hsl(45 30% 80%); }
+.rota-legend-strip .legend-swatch.weekend   { background: hsl(var(--accent-purple) / .75); }
+.rota-legend-strip .legend-swatch.medcycle  { background: hsl(280 50% 88%); }
+.rota-legend-strip .legend-swatch.bus       { background: hsl(220 14% 88%); }
+.rota-legend-strip .legend-swatch.request   { background: hsl(220 14% 78%); }
 
 /* Paper-table — borders and tinting that resembles the printed form */
 .paper-table {

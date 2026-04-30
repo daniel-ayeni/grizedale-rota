@@ -27,13 +27,14 @@ import {
 
 const ON_CALL_STAFF = ["L.M.", "J.C.", "L.D."];
 
-/* Visual cell display: OFF renders blank, otherwise the shift letter */
+/* OFF + blank both render as empty cells */
 function displayShift(shift) {
     if (!shift || shift === "OFF") return "";
     return SHIFT_LABEL[shift] || shift;
 }
 
-const LEGEND_BLOCKS = [
+/* Horizontal legend strip below the grid */
+const LEGEND_ITEMS = [
     { key: "firstaider", label: "First Aider" },
     { key: "al",         label: "Annual Leave" },
     { key: "trn",        label: "Training" },
@@ -41,10 +42,20 @@ const LEGEND_BLOCKS = [
     { key: "sleep",      label: "Sleep In" },
     { key: "paycut",     label: "Pay cut off" },
     { key: "weekend",    label: "Weekend Off" },
-    { key: "medcycle",   label: "Med 28-day cycle" },
+    { key: "medcycle",   label: "Medication 28-day cycle" },
     { key: "bus",        label: "Bus" },
     { key: "request",    label: "Request Box" },
 ];
+
+/* Format the title in the same shape as the paper:
+   "GRIZEDALE MONTHLY 20 April 2026 ----- 17 May 2026 ROTA" */
+function formatPaperTitle(homeName, fromStr, toStr) {
+    const fmt = (s) => {
+        const d = parseYmd(s);
+        return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+    };
+    return `${(homeName || "Grizedale").toUpperCase()} MONTHLY  ${fmt(fromStr)}  -----  ${fmt(toStr)}  ROTA`;
+}
 
 export default function RotaEditor() {
     const { id } = useParams();
@@ -56,6 +67,7 @@ export default function RotaEditor() {
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [busyKey, setBusyKey] = useState(null);
     const [payCutOffDate, setPayCutOffDate] = useState(null);
+    const [homeName, setHomeName] = useState("Grizedale");
     const violationCellsRef = useRef({ hard: new Set(), soft: new Set() });
     const [violationKey, setViolationKey] = useState(0);
 
@@ -70,6 +82,7 @@ export default function RotaEditor() {
             setRota(rotaRes.data);
             setStaff(staffRes.data.filter((s) => s.active));
             setHolidays(settingsRes.data?.public_holidays || []);
+            setHomeName(settingsRes.data?.home_name || "Grizedale");
             setPayCutOffDate(rotaRes.data?.pay_cut_off_date || null);
             setRequests(requestsRes.data);
             setViolations(rotaRes.data.validation_report?.violations || []);
@@ -114,33 +127,13 @@ export default function RotaEditor() {
         return m;
     }, [requests]);
 
-    // First Friday → start of medication 28-day cycle
+    /* First Friday → start of medication 28-day cycle */
     const medCycleStartIdx = useMemo(() => {
         for (let i = 0; i < dates.length && i < 7; i++) {
             if (dates[i].getDay() === 5) return i;
         }
         return -1;
     }, [dates]);
-
-    // Per-week weekend-off staff (Sat & Sun both blank)
-    const weekendOffByWeek = useMemo(() => {
-        if (!rota) return [];
-        const out = [];
-        for (let w = 0; w < (rota.weeks || 4); w++) {
-            const sat = dateStrs[w * 7 + 5];
-            const sun = dateStrs[w * 7 + 6];
-            const isWorking = (sh) => sh && !["", "OFF", "AL", "TRN"].includes(sh);
-            out.push(
-                staff
-                    .filter((s) =>
-                        !isWorking(cellMap.get(`${sat}|${s.initials}`)?.shift) &&
-                        !isWorking(cellMap.get(`${sun}|${s.initials}`)?.shift),
-                    )
-                    .map((s) => s.initials),
-            );
-        }
-        return out;
-    }, [rota, dateStrs, staff, cellMap]);
 
     useEffect(() => {
         const hard = new Set();
@@ -215,21 +208,23 @@ export default function RotaEditor() {
         return <div className="text-sm text-muted-foreground" data-testid="rota-loading">Loading rota…</div>;
     }
 
-    const titleRange = `${rota.start_date} ───── ${dateStrs[dateStrs.length - 1]}`;
+    const fromStr = rota.start_date;
+    const toStr = dateStrs[dateStrs.length - 1];
+    const paperTitle = formatPaperTitle(homeName, fromStr, toStr);
 
     return (
-        <div className="space-y-4" data-testid="rota-editor-page">
-            {/* Top toolbar */}
-            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
-                <div>
-                    <Link to="/rotas" className="text-xs text-muted-foreground inline-flex items-center gap-1 mb-1" data-testid="rota-back">
+        <div className="space-y-3" data-testid="rota-editor-page">
+            {/* Slim toolbar above the grid */}
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div className="flex items-center gap-3">
+                    <Link to="/rotas" className="text-xs text-muted-foreground inline-flex items-center gap-1" data-testid="rota-back">
                         <ArrowLeft className="w-3 h-3" /> Rotas
                     </Link>
-                    <div className="text-sm text-muted-foreground">{rota.title} · {rota.weeks} weeks</div>
+                    <span className="text-sm text-muted-foreground">{rota.title} · {fromStr} → {toStr} · {rota.weeks}w</span>
+                    <Badge variant={rota.status === "published" ? "default" : "outline"} data-testid="rota-status-badge">{rota.status}</Badge>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={rota.status === "published" ? "default" : "outline"} data-testid="rota-status-badge">{rota.status}</Badge>
-                    <Button variant="outline" onClick={async () => {
+                    <Button variant="outline" size="sm" onClick={async () => {
                         try {
                             const res = await api.post(`/rotas/${id}/copy-from-previous`);
                             const h = res.data?.validation_report?.summary?.hard ?? 0;
@@ -237,11 +232,11 @@ export default function RotaEditor() {
                             await load();
                         } catch (err) { toast.error(formatApiError(err)); }
                     }} data-testid="rota-copy-from-previous">
-                        <Copy className="w-4 h-4 mr-1.5" /> Copy from previous
+                        <Copy className="w-3.5 h-3.5 mr-1.5" /> Copy
                     </Button>
                     <Popover>
                         <PopoverTrigger asChild>
-                            <Button variant="outline" data-testid="rota-paycutoff-button">Pay cut-off: {payCutOffDate || "—"}</Button>
+                            <Button variant="outline" size="sm" data-testid="rota-paycutoff-button">Pay cut-off: {payCutOffDate || "—"}</Button>
                         </PopoverTrigger>
                         <PopoverContent className="w-60 p-2 space-y-2" align="end">
                             <Label className="text-xs uppercase tracking-wider text-muted-foreground">Set pay cut-off date</Label>
@@ -251,7 +246,7 @@ export default function RotaEditor() {
                             {payCutOffDate && <Button size="sm" variant="ghost" className="w-full" onClick={() => setPayCutOff(null)} data-testid="rota-paycutoff-clear">Clear</Button>}
                         </PopoverContent>
                     </Popover>
-                    <Button variant="outline" onClick={async () => {
+                    <Button variant="outline" size="sm" onClick={async () => {
                         try {
                             const res = await api.post(`/rotas/${id}/validate`);
                             setViolations(res.data?.violations || []);
@@ -259,132 +254,141 @@ export default function RotaEditor() {
                             setDrawerOpen(true);
                         } catch (err) { toast.error(formatApiError(err)); }
                     }} data-testid="rota-validate-button">
-                        <RefreshCw className="w-4 h-4 mr-1.5" /> Validate
+                        <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Validate
                     </Button>
                     <Button
                         variant={summary.hard > 0 ? "destructive" : "outline"}
+                        size="sm"
                         onClick={() => setDrawerOpen(true)}
                         data-testid="rota-violations-button"
                     >
-                        <AlertTriangle className="w-4 h-4 mr-1.5" />
+                        <AlertTriangle className="w-3.5 h-3.5 mr-1.5" />
                         {summary.hard} hard {summary.soft > 0 ? `· ${summary.soft} soft` : ""}
                     </Button>
-                    <Button className="btn-primary" onClick={async () => {
+                    <Button className="btn-primary" size="sm" onClick={async () => {
                         try {
                             await api.put(`/rotas/${id}`, { status: rota.status === "draft" ? "published" : "draft" });
                             toast.success(rota.status === "draft" ? "Published" : "Reverted to draft");
                             await load();
                         } catch (err) { toast.error(formatApiError(err)); }
                     }} data-testid="rota-publish-button">
-                        <Save className="w-4 h-4 mr-1.5" /> {rota.status === "draft" ? "Publish" : "Revert to draft"}
+                        <Save className="w-3.5 h-3.5 mr-1.5" /> {rota.status === "draft" ? "Publish" : "Revert"}
                     </Button>
                 </div>
             </div>
 
-            {/* Italic blue title — Paper-style */}
-            <div className="px-2 pt-2">
-                <h1 className="rota-paper-title" data-testid="rota-grid-title">
-                    Grizedale Monthly · {titleRange} · Rota
-                </h1>
+            {/* Italic blue title — sits centred above the grid */}
+            <div className="px-2 pt-1">
+                <h1 className="rota-paper-title" data-testid="rota-grid-title">{paperTitle}</h1>
             </div>
 
-            {/* Grid */}
+            {/* Grid wrapper with horizontal scroll */}
             <TooltipProvider delayDuration={150}>
-                <div className="overflow-x-auto" data-testid="rota-grid-wrap">
+                <div className="rota-grid-wrap" data-testid="rota-grid-wrap">
                     <div className="rota-grid" data-testid="rota-grid" data-violation-key={violationKey}>
-                        {/* Header row: legend label cell + staff-column header + 28 day cells */}
-                        <div className="rota-header-cell-staff" style={{ borderBottom: "2px solid hsl(var(--fg) / .35)" }}>
-                            Key
-                        </div>
-                        <div className="rota-header-cell-staff" style={{ borderBottom: "2px solid hsl(var(--fg) / .35)" }}>
-                            Staff
-                        </div>
+                        {/* HEADER ROW 1: top-left corner cell + 28 day-letter cells */}
+                        <div className="rota-corner-cell" data-testid="rota-corner-cell" aria-hidden="true" />
                         {dates.map((d, i) => {
                             const ds = dateStrs[i];
                             const we = isWeekend(d);
-                            const hol = holidayDates.has(ds);
                             const isWeekEnd = (i + 1) % 7 === 0 && i < dates.length - 1;
-                            const reqs = requestsByDate.get(ds);
                             const isMedCycle = i === medCycleStartIdx;
-                            const isPayCut = ds === payCutOffDate;
                             return (
-                                <Tooltip key={ds}>
+                                <div
+                                    key={`dl-${ds}`}
+                                    className={`rota-header-day ${we ? "weekend" : ""} ${isWeekEnd ? "week-divider" : ""}`}
+                                    data-testid={`grid-dayletter-${ds}`}
+                                >
+                                    {isMedCycle && (
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <span className="med-cycle-flag" data-testid="med-cycle-flag" />
+                                            </TooltipTrigger>
+                                            <TooltipContent>Medication 28-day cycle starts here</TooltipContent>
+                                        </Tooltip>
+                                    )}
+                                    {dayLetter(d)}
+                                </div>
+                            );
+                        })}
+
+                        {/* HEADER ROW 2: identity-column header (peach merged with row 1) + 28 date-number cells */}
+                        <div className="rota-corner-cell rota-corner-cell-bottom" aria-hidden="true" />
+                        {dates.map((d, i) => {
+                            const ds = dateStrs[i];
+                            const we = isWeekend(d);
+                            const isWeekEnd = (i + 1) % 7 === 0 && i < dates.length - 1;
+                            const hol = holidayDates.has(ds);
+                            const isPayCut = ds === payCutOffDate;
+                            const reqs = requestsByDate.get(ds);
+                            return (
+                                <Tooltip key={`dn-${ds}`}>
                                     <TooltipTrigger asChild>
                                         <div
-                                            className={`rota-header-cell ${we ? "weekend" : ""} ${isWeekEnd ? "week-divider" : ""}`}
-                                            data-testid={`grid-header-${ds}`}
+                                            className={`rota-header-date ${we ? "weekend" : ""} ${isWeekEnd ? "week-divider" : ""}`}
+                                            data-testid={`grid-datenum-${ds}`}
                                         >
-                                            <span className="day-letter">{dayLetter(d)}</span>
-                                            <span className="day-num">{d.getDate()}</span>
-                                            <div className="marker-row">
-                                                {hol && <span className="marker-dot" style={{ background: "hsl(var(--accent-bright-blue))" }} title="Public holiday" />}
-                                                {isMedCycle && <span className="marker-dot" style={{ background: "hsl(280 50% 70%)" }} title="Medication 28-day cycle starts" />}
-                                                {isPayCut && <span className="marker-dot" style={{ background: "hsl(45 30% 50%)" }} title="Pay cut-off" />}
-                                                {reqs && reqs.length > 0 && (
-                                                    <Popover>
-                                                        <PopoverTrigger asChild>
-                                                            <button type="button" className="marker-dot"
-                                                                style={{ background: "hsl(var(--accent-red))", cursor: "pointer" }}
-                                                                title={`${reqs.length} pending request(s)`}
-                                                                data-testid={`req-marker-${ds}`} />
-                                                        </PopoverTrigger>
-                                                        <PopoverContent align="center" className="w-72">
-                                                            <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">Pending requests · {ds}</div>
-                                                            {reqs.map((r) => (
-                                                                <div key={r.id} className="text-xs border-t py-1.5" style={{ borderColor: "hsl(var(--border))" }}>
-                                                                    <div className="font-semibold">{r.staff_initials} · {r.shift_preference}</div>
-                                                                    {r.notes && <div className="text-muted-foreground">{r.notes}</div>}
-                                                                </div>
-                                                            ))}
-                                                        </PopoverContent>
-                                                    </Popover>
-                                                )}
-                                            </div>
+                                            {d.getDate()}
+                                            {(hol || isPayCut || (reqs && reqs.length > 0)) && (
+                                                <span className="header-marker-row">
+                                                    {hol && <span className="marker-dot" style={{ background: "hsl(var(--accent-bright-blue))" }} />}
+                                                    {isPayCut && <span className="marker-dot" style={{ background: "hsl(45 30% 35%)" }} />}
+                                                    {reqs && reqs.length > 0 && (
+                                                        <Popover>
+                                                            <PopoverTrigger asChild>
+                                                                <button type="button" className="marker-dot"
+                                                                    style={{ background: "hsl(var(--accent-red))", cursor: "pointer" }}
+                                                                    data-testid={`req-marker-${ds}`} />
+                                                            </PopoverTrigger>
+                                                            <PopoverContent align="center" className="w-72">
+                                                                <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">Pending requests · {ds}</div>
+                                                                {reqs.map((r) => (
+                                                                    <div key={r.id} className="text-xs border-t py-1.5" style={{ borderColor: "hsl(var(--border))" }}>
+                                                                        <div className="font-semibold">{r.staff_initials} · {r.shift_preference}</div>
+                                                                        {r.notes && <div className="text-muted-foreground">{r.notes}</div>}
+                                                                    </div>
+                                                                ))}
+                                                            </PopoverContent>
+                                                        </Popover>
+                                                    )}
+                                                </span>
+                                            )}
                                         </div>
                                     </TooltipTrigger>
-                                    {(hol || isMedCycle || isPayCut) && (
-                                        <TooltipContent>
-                                            {hol && <div>Public holiday: {holidayMap.get(ds)}</div>}
-                                            {isMedCycle && <div>Medication 28-day cycle starts here</div>}
-                                            {isPayCut && <div>Pay cut-off date</div>}
-                                        </TooltipContent>
-                                    )}
+                                    {hol && <TooltipContent>{holidayMap.get(ds)}</TooltipContent>}
+                                    {isPayCut && <TooltipContent>Pay cut-off date</TooltipContent>}
                                 </Tooltip>
                             );
                         })}
 
-                        {/* Staff rows — each staff row begins with a legend cell, then the staff label, then 28 cells */}
-                        {staff.map((s, sIdx) => {
-                            // Cycle through legend blocks so the 8 staff rows get the 8 most relevant ones,
-                            // remaining 2 legend blocks (bus / request) are appended below.
-                            const legend = LEGEND_BLOCKS[sIdx] || LEGEND_BLOCKS[0];
-                            return (
-                                <StaffRow
-                                    key={s.initials}
-                                    s={s}
-                                    legend={legend}
-                                    dateStrs={dateStrs}
-                                    dates={dates}
-                                    cellMap={cellMap}
-                                    onCallByDate={onCallByDate}
-                                    weekendOffByWeek={weekendOffByWeek}
-                                    onClick={onCellClick}
-                                    onPatch={patchCell}
-                                    onSetOnCall={setOnCall}
-                                    holidayDates={holidayDates}
-                                    violationCellsRef={violationCellsRef}
-                                    busyKey={busyKey}
-                                />
-                            );
-                        })}
-
-                        {/* Footer rows for the remaining 2 legend blocks (Bus + Request Box) — empty cells */}
-                        {LEGEND_BLOCKS.slice(staff.length).map((legend) => (
-                            <FooterLegendRow key={legend.key} legend={legend} dateStrs={dateStrs} />
+                        {/* STAFF ROWS */}
+                        {staff.map((s) => (
+                            <StaffRow
+                                key={s.initials}
+                                s={s}
+                                dateStrs={dateStrs}
+                                cellMap={cellMap}
+                                onCallByDate={onCallByDate}
+                                onClick={onCellClick}
+                                onPatch={patchCell}
+                                onSetOnCall={setOnCall}
+                                violationCellsRef={violationCellsRef}
+                                busyKey={busyKey}
+                            />
                         ))}
                     </div>
                 </div>
             </TooltipProvider>
+
+            {/* Legend strip BELOW the grid */}
+            <div className="rota-legend-strip" data-testid="rota-legend-strip">
+                {LEGEND_ITEMS.map((it) => (
+                    <span key={it.key} className="legend-item" data-testid={`legend-${it.key}`}>
+                        <span className={`legend-swatch ${it.key}`} />
+                        {it.label}
+                    </span>
+                ))}
+            </div>
 
             {/* Violations drawer */}
             <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
@@ -422,16 +426,15 @@ export default function RotaEditor() {
     );
 }
 
-function StaffRow({ s, legend, dateStrs, dates, cellMap, onCallByDate, weekendOffByWeek, onClick, onPatch, onSetOnCall, holidayDates, violationCellsRef, busyKey }) {
+function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetOnCall, violationCellsRef, busyKey }) {
     return (
         <>
-            <div className={`rota-legend-cell legend-${legend.key}`} data-testid={`legend-${legend.key}`}>
-                <span className="legend-label">{legend.label}</span>
-            </div>
-            <div className="rota-row-label" data-testid={`row-label-${s.initials}`}>
-                <span className="role-tag">{s.role}</span>
-                <span className="name-tag">{s.initials}</span>
-                <span className="hours-tag">{s.target_weekly_hours}h</span>
+            <div className="rota-identity-cell" data-testid={`row-label-${s.initials}`}>
+                <div className="ident-role">{s.role}</div>
+                <div className="ident-name-line">
+                    <span className="ident-initials">{s.initials}</span>
+                    <span className="ident-hours">{s.target_weekly_hours}</span>
+                </div>
             </div>
             {dateStrs.map((ds, i) => {
                 const cell = cellMap.get(`${ds}|${s.initials}`);
@@ -442,10 +445,6 @@ function StaffRow({ s, legend, dateStrs, dates, cellMap, onCallByDate, weekendOf
                 const soft = violationCellsRef.current.soft.has(k);
                 const isWeekEnd = (i + 1) % 7 === 0 && i < dateStrs.length - 1;
                 const onCall = onCallByDate.get(ds) === s.initials;
-                // Weekend-off chip: on Saturdays only, when this staff has both Sat & Sun blank in this week
-                const wIdx = Math.floor(i / 7);
-                const isSat = i % 7 === 5;
-                const showWO = isSat && weekendOffByWeek[wIdx]?.includes(s.initials);
 
                 const cellCls = `${shiftCellClass(shift)} ${locked ? "locked" : ""} ${hard ? "violation-hard" : ""} ${soft && !hard ? "violation-soft" : ""} ${isWeekEnd ? "week-divider" : ""}`;
                 const busy = busyKey === k;
@@ -463,7 +462,6 @@ function StaffRow({ s, legend, dateStrs, dates, cellMap, onCallByDate, weekendOf
                         onPatch={onPatch}
                         onCall={onCall}
                         onSetOnCall={onSetOnCall}
-                        showWO={showWO}
                         isOnCallEditable={isOnCallEditable}
                         busy={busy}
                     />
@@ -473,27 +471,7 @@ function StaffRow({ s, legend, dateStrs, dates, cellMap, onCallByDate, weekendOf
     );
 }
 
-function FooterLegendRow({ legend, dateStrs }) {
-    return (
-        <>
-            <div className={`rota-legend-cell legend-${legend.key}`} data-testid={`legend-${legend.key}`}>
-                <span className="legend-label">{legend.label}</span>
-            </div>
-            <div className="rota-row-label" style={{ color: "hsl(var(--fg-muted))", fontSize: "0.7rem" }}>
-                {legend.label}
-            </div>
-            {dateStrs.map((ds, i) => {
-                const isWeekEnd = (i + 1) % 7 === 0 && i < dateStrs.length - 1;
-                return (
-                    <div key={ds} className={`shift-cell shift-blank ${isWeekEnd ? "week-divider" : ""}`}
-                        style={{ background: "hsl(var(--bg-elev))" }} />
-                );
-            })}
-        </>
-    );
-}
-
-function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, showWO, isOnCallEditable, busy }) {
+function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy }) {
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState({ shift, locked, reason: "" });
     useEffect(() => { setDraft({ shift, locked, reason: "" }); }, [shift, locked, dateStr, init]);
@@ -516,7 +494,6 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
                     title={shift ? SHIFT_LABEL[shift] : ""}
                 >
                     {displayShift(shift)}
-                    {showWO && <span className="wo-chip" title="Weekend off">WO</span>}
                     {onCall && <span className="oncall-chip">on-call</span>}
                 </button>
             </PopoverTrigger>

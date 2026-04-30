@@ -160,8 +160,8 @@ RULES: list[dict] = [
     {
         "id": "non_flexi_overage",
         "name": "Non-flexi staff stay near contracted hours",
-        "description": "Strong penalty for assigning non-flexi staff hours beyond their contracted weekly hours × weeks. Flexi staff (see overtime preference rule) are exempt.",
-        "severity_default": "soft",
+        "description": "Hard cap (mode=hard) on non-flexi staff hours at contracted weekly × weeks + 2h tolerance. Switch to soft to allow overage with weighted penalty. Flexi staff (see overtime preference rule) are exempt.",
+        "severity_default": "hard",
         "immovable": False,
         "weight_default": 50,
     },

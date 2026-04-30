@@ -2,58 +2,51 @@
 
 ## Original problem statement
 Build a rota builder web app for Grizedale (UK care home). Tech: FastAPI + React + MongoDB.
-Phase 0: backend-only OR-Tools CP-SAT proof-of-concept.
-Phase 1: foundation — auth, persistence, CRUD, solver corrections, theme system.
-Phase 2 (next): interactive 4-week rota grid editor.
-Phase 3: "Generate Rota" wired to UI + what-if mode.
-Phase 4: PDF / Excel exports.
 
 ## User personas
 - **Manager (J.C.)** — produces & signs off the 4-week rota.
 - **Deputy (L.M.)** — reviews, edits, covers admin.
-- **Care staff** — read their assigned shifts.
+- **Care staff** — submit requests via anonymous link; read shifts.
 
 ## Core requirements (static)
-- 4-week rota window (28 days), 8 staff, 7 service users.
+- 4-week rota window (28 days, Mon→Sun), 8 staff, 7 service users.
 - Shift types: D, D*, N, *, OFF, AL, TRN.
-- Daily cover: 2 day staff (2D OR 1D+1D*) and 2 night staff (D*+N OR *+N).
-- Every shift: ≥1 med-competent + ≥1 first-aider.
-- No-male-pair-alone rule (when D.A./A.A. on shift, female required).
-- Capability flags per staff (can_do_days/nights/sleepover).
-- N→D forbidden, D*→D* forbidden, locked cells preserved.
-- Manager (J.C.) hard rule: never assigned a working shift unless explicitly locked.
-- Contracted-hours hard rule: each staff hits target_weekly_hours×weeks − AL_days×12 − TRN_days×8 (−2h tolerance).
-- Soft rules: D* preference for sleepover-capable, preferred-off-days, avoid-pairing, weekend fairness.
+- Daily cover: 2D or D+D* on day side; D*+N or *+N on night.
+- Per-shift med-competent + first-aider required.
+- No-male-pair-alone, capability flags, N→D and D*→D* forbidden, locked cells preserved.
+- Manager (J.C.) hard rule: no working shifts unless explicitly locked.
+- Contracted-hours min: ≥ target − leave/training − 2h.
+- Non-flexi cap: ≤ target + 8h (hard, mode-toggleable in /rules).
+- Overtime preference: D.A. flexi rewarded for hours above target up to 48h/week cap.
+- Prefer D*+N over *+N for night cover.
 
 ## What's been implemented
 - **2026-04-30 — Phase 0**: CP-SAT solver, 3 endpoints, test_runner.
-- **2026-04-30 — Phase 1**:
-  - Solver corrections (manager hard, relaxed night-med, contracted-hours hard, D* preference, AL/TRN no-voluntary)
-  - Explicit pairing assertion in test_runner.py: D.A. on D*/* ⇒ N must be C.E. or J.R.
-  - JWT auth (HS256, 24h, Bearer + localStorage); bcrypt password hashing
-  - Idempotent Mongo seed-on-boot (users, staff, service_users, rules_config, settings)
-  - Full CRUD APIs: /api/staff, /api/service-users, /api/rules, /api/settings, /api/admins
-  - /api/solver/generate now reads from Mongo by default; accepts override JSON
-  - React frontend with 6 routes (Dashboard, Staff, Service Users, Rules, Settings, Admins) + Login
-  - Two-theme system: **Paper** (cream + orange section bands, Lora display font) and **Modern** (slate + teal, Outfit display font); persisted in localStorage
-  - All shadcn components used: Table, Sheet, Dialog, Tabs, Switch, Slider, Select, Tooltip, AlertDialog, DropdownMenu, Toast (sonner)
-  - 31/31 backend tests pass; frontend verified end-to-end via testing agent + screenshots
+- **2026-04-30 — Phase 1**: JWT auth, MongoDB persistence, full CRUD, Rules/Settings/Admins UI, Paper/Modern theme.
+- **2026-04-30 — Phase 2**:
+  - **Solver**: Phase 2 fixes — J.R. nights-only (`can_do_sleepover=false`), C.E. permanent FA, non_flexi_overage hard cap target+8, prefer_dstar_over_star (weight 200) → result is **all D*+N nights, zero `*` shifts** in the optimal solution; overtime_prefer_flexi reward+penalty split capped at 48h/week.
+  - **Backend**: rota_validator.py (shared rule_definitions); endpoints — `/api/rotas` CRUD + `/copy-from-previous` + `/cell` PATCH + `/validate`; `/api/leave` filter/bulk; `/api/requests` + bulk + accept-creates-leave-OFF_REQ; `/api/request-tokens`; `/api/public/request-link/{token}` (no auth) + submit.
+  - **DB seeder**: idempotent seed + migrations for C.E. FA, J.R. sleepover, new rule entries, weight bumps.
+  - **Frontend**: 4 new routes — `/rotas`, `/rotas/:id` (4-week grid editor), `/holidays` (year+month), `/requests` (tabs + bulk + manage staff links), public `/r/:token`.
+  - **Grid editor (Paper)** matches the original photo: italic blue centered title, two-row peach header (M/T/W/T/F/S/S + dates 20→17), peach left identity column (role + initials + hours), white body cells with **Caveat handwriting font** for D/D*/N letters, full-yellow `*`, full-pink AL, full-red TRN, OFF=blank, on-call blue corner chip, lavender flag on first-Friday med-cycle Friday, blue/grey/red dots on date row for holiday/pay-cut-off/pending-request markers, thick black week dividers, horizontal legend strip below the grid.
+  - **Click-cycle** (blank→D→D*→N→\*→OFF→AL→TRN→blank), **right-click popover** with shift picker + Lock toggle + Mark-on-call switch (L.M./J.C./L.D. only) + Reason input, **real-time validator** (red 2px ring on hard violations).
+  - **Cell PATCH performance** ~50–200 ms; full validate <300 ms.
+  - **Modern theme** stays distinct (slate/teal/Inter, no peach, no handwriting font, plain headers).
 
-## Phase 1 known limitations / open items
-- Solver hard rule "manager_no_shifts" defaults to mode=hard. If a future seed wants J.C. on the rota voluntarily, the operator must flip this rule to soft OR add a locked cell.
-- Email validation accepts any string with `@` (so `.local` works). Phase 2 may want stricter validation per environment.
-- Sleepover hour accounting: D*=14h, *=0h. Editable from /settings shift hours table.
+## Open items / not yet implemented
+- "Generate Rota" button in Dashboard still disabled (Phase 3 will wire it up + what-if mode).
+- PDF / Excel exports (Phase 4).
+- Forgot-password flow.
+- Multi-rota visualisation / comparison.
 
 ## Prioritised backlog
-- **P0 — Phase 2**: read-only 4-week rota grid (consumes /api/solver/generate output) with paper-style coloured cells (D=cream, D*=yellow sleepover, N=blue, AL=pink, FA=green, TRN=dark blue, OFF=muted).
-- **P0 — Phase 2**: locked-cells / leave editor on the grid (click a cell to set AL/locked).
-- **P1 — Phase 3**: "Generate Rota" button wired up + what-if mode (toggle staff to AL/sick on grid, re-solve in place, highlight infeasibility reasons).
-- **P1 — rota persistence**: save generated rota to Mongo with versioning.
-- **P2 — Phase 4**: PDF & Excel exports.
-- **P2**: forgot-password flow.
-- **P2**: server-driven rule-config schema validation on PUT /api/rules.
+- **P0 — Phase 3**: wire "Generate Rota" in editor + Dashboard (calls /api/solver/generate, applies result to the active rota, surfaces violations).
+- **P0 — Phase 3**: what-if mode (toggle staff to AL/sick, re-solve in place).
+- **P1 — Phase 4**: PDF + Excel exports.
+- **P1**: Soft-rule satisfaction reporting in validator output (currently focuses on hard rules).
+- **P2**: Forgot-password + email notifications via Resend.
+- **P2**: Service-user-level scheduling (1:1 staff-to-resident allocation).
 
 ## Next tasks
-1. Phase 2 design pass — paper-style rota grid mockup.
-2. Phase 2 implementation — read-only grid + cell editor (AL / lock).
-3. Phase 3 — wire Generate Rota + what-if.
+1. Phase 3: Generate Rota button + what-if mode.
+2. Phase 4: exports.
