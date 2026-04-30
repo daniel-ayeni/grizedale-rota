@@ -32,6 +32,13 @@ Build a rota builder web app for Grizedale (UK care home). Tech: FastAPI + React
   - **Click-cycle** (blank→D→D*→N→\*→OFF→AL→TRN→blank), **right-click popover** with shift picker + Lock toggle + Mark-on-call switch (L.M./J.C./L.D. only) + Reason input, **real-time validator** (red 2px ring on hard violations).
   - **Cell PATCH performance** ~50–200 ms; full validate <300 ms.
   - **Modern theme** stays distinct (slate/teal/Inter, no peach, no handwriting font, plain headers).
+- **2026-04-30 — Phase 3 (Generate Rota)**:
+  - **Backend**: `POST /api/rotas/{id}/generate` runs CP-SAT on top of an existing draft, preserving locked cells + AL/TRN, accepting non-OFF requests as soft preferences, returns full validation_report. Over-constrained → HTTP 422 with blocking_constraints. ~500ms wall.
+  - **Solver**: overtime_prefer_flexi rule auto-detects flexi staff by role match (default "Flexi") with optional override list; legacy `preferred_staff_initials` kept for backward compat. Verified: D.A. (+70h) and T.D. (+56h) both absorb overtime under the new rule.
+  - **Frontend**: Dashboard "Generate Rota" dialog → pick draft / new date → navigate to /rotas/:id?generate=1 → editor auto-runs solver with success toast. RotaEditor top-bar "Generate Rota" button with AlertDialog confirmation. Blockers modal on 422 failure.
+  - **Rules.jsx**: new `OvertimeParams` component — Auto-detect-by-role Select + Weekly-cap input + "Currently rewarding overtime to:" badges + override-staff Checkbox grid (8 staff × roles).
+  - **Paper theme cells**: every shift type now has a full-cell background colour: D=cream `#FFFBE8`, D\*=pale yellow `#FFF3B0`, N=pale blue `#D6E6F2`, \*=bright yellow `#FFE066`, AL=pink, TRN=red.
+  - **Bug fix — day-cover affected_cells**: when a user changes D\* → \* the validator now flags the `*` cell (not just the surviving D cell) as `affected`, so the cell the user just edited red-borders and the violations counter increments. Same widening applied to night_cover. Regression test in `test_runner.py` (D\* → \* on first L.D. D\* date asserts L.D. ∈ affected_cells of the day_cover violation).
 
 ## Open items / not yet implemented
 - "Generate Rota" button in Dashboard still disabled (Phase 3 will wire it up + what-if mode).

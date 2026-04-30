@@ -257,6 +257,76 @@ def main() -> int:
     print("[OK] forced-scenario hard-rule assertions passed")
     print(f"Forced solve time: {forced_result.get('solve_time_ms')} ms")
 
+    # =====================================================================
+    # Validator regression test: D* → * breaks day cover and L.D.'s `*`
+    # cell MUST be flagged in `affected_cells`. (Bug repro: previously the
+    # validator only flagged the surviving D-side cell, leaving the
+    # cell the user just edited unmarked in the frontend.)
+    # =====================================================================
+    print("\n=== VALIDATOR REGRESSION: D* -> * day-cover break flags the `*` cell ===")
+    # The validator imports `solver.rule_definitions` (no `backend.` prefix)
+    # so we need /app/backend on sys.path before importing it.
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from solver.rota_validator import (  # noqa: E402
+        validate_rota,
+        summarise_violations,
+    )
+
+    # Find the first date where L.D. is on D* in the unforced solver result
+    target_date = None
+    for day in result["rota"]:
+        for a in day["assignments"]:
+            if a["staff_initials"] == "L.D." and a["shift"] == "D*":
+                target_date = day["date"]
+                break
+        if target_date:
+            break
+    assert target_date, "expected at least one D* assignment for L.D. in solver result"
+
+    # Build a mutated rota: L.D.'s D* on target_date becomes *
+    mutated_assignments = []
+    for day in result["rota"]:
+        for a in day["assignments"]:
+            mutated = {
+                "date": day["date"],
+                "staff_initials": a["staff_initials"],
+                "shift": a["shift"],
+                "locked": False,
+            }
+            if mutated["date"] == target_date and mutated["staff_initials"] == "L.D.":
+                mutated["shift"] = "*"
+            mutated_assignments.append(mutated)
+    mutated_rota = {
+        "start_date": payload["rota_start_date"],
+        "weeks": payload.get("weeks", 4),
+        "assignments": mutated_assignments,
+    }
+
+    vlist = validate_rota(mutated_rota, payload["staff"], rules_config={})
+    summary = summarise_violations(vlist)
+    print(f"  validator returned {summary['hard']} hard / {summary['soft']} soft violations")
+
+    day_cover_v = [
+        v for v in vlist
+        if v["rule_id"] == "day_cover" and v.get("date") == target_date and v["severity"] == "hard"
+    ]
+    assert day_cover_v, (
+        f"expected a `day_cover` HARD violation on {target_date} after D*->*, "
+        f"got: {[v['rule_id'] for v in vlist]}"
+    )
+    affected_inits = {c["staff_initials"] for v in day_cover_v for c in v["affected_cells"]}
+    assert "L.D." in affected_inits, (
+        f"L.D.'s `*` cell on {target_date} must be in affected_cells "
+        f"(otherwise the frontend cannot red-border the cell the user just edited). "
+        f"Got affected: {sorted(affected_inits)}"
+    )
+    print(
+        f"  {target_date}: day_cover violation raised; "
+        f"affected_cells = {sorted(affected_inits)} -> includes L.D. [OK]"
+    )
+    print("[OK] validator regression: `*` cell is flagged when day cover breaks")
+
     return 0
 
 

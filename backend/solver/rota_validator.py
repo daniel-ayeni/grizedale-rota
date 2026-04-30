@@ -106,12 +106,18 @@ def validate_rota(
     violations: list[dict] = []
 
     # --- day_cover (immovable) -------------------------------------------
+    # When day cover is broken we flag every cell on that date that
+    # *participates in* (D, D*) or *could/should have participated in* (*)
+    # the day cover. The `*` is included because a sleepover-only assignment
+    # that doesn't pair with proper day cover is a frequent cause of the
+    # break (e.g. user changed a D* to * — the `*` is the smoking gun).
+    DAY_COVER_AFFECTED = DAY_COVER_SHIFTS | {"*"}
     for d_str in day_strs:
         c_d = sum(1 for s in staff_inits if cell[(d_str, s)]["shift"] == "D")
         c_ds = sum(1 for s in staff_inits if cell[(d_str, s)]["shift"] == "D*")
         if c_d + c_ds != 2:
             affected = [{"date": d_str, "staff_initials": s} for s in staff_inits
-                        if cell[(d_str, s)]["shift"] in DAY_COVER_SHIFTS]
+                        if cell[(d_str, s)]["shift"] in DAY_COVER_AFFECTED]
             violations.append(_v("day_cover", "hard",
                 f"Day cover is {c_d + c_ds} (need 2: 2D or D+D*)",
                 date_=d_str, affected_cells=affected))
@@ -123,19 +129,21 @@ def validate_rota(
                 date_=d_str, affected_cells=affected))
 
     # --- night_cover (immovable) -----------------------------------------
+    # All three of N, D*, * participate in night cover so all are flagged
+    # when night cover is broken.
     for d_str in day_strs:
         c_n = sum(1 for s in staff_inits if cell[(d_str, s)]["shift"] == "N")
         c_ds = sum(1 for s in staff_inits if cell[(d_str, s)]["shift"] == "D*")
         c_st = sum(1 for s in staff_inits if cell[(d_str, s)]["shift"] == "*")
         if c_n != 1:
             affected = [{"date": d_str, "staff_initials": s} for s in staff_inits
-                        if cell[(d_str, s)]["shift"] == "N"]
+                        if cell[(d_str, s)]["shift"] in NIGHT_COVER_SHIFTS]
             violations.append(_v("night_cover", "hard",
                 f"{c_n} waking-night staff (need exactly 1 N)",
                 date_=d_str, affected_cells=affected))
         if c_ds + c_st != 1:
             affected = [{"date": d_str, "staff_initials": s} for s in staff_inits
-                        if cell[(d_str, s)]["shift"] in {"D*", "*"}]
+                        if cell[(d_str, s)]["shift"] in NIGHT_COVER_SHIFTS]
             violations.append(_v("night_cover", "hard",
                 f"{c_ds + c_st} sleepover staff (need exactly 1: D* or *)",
                 date_=d_str, affected_cells=affected))
