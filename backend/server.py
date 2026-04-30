@@ -758,22 +758,34 @@ async def _resolve_request(req: dict, status: str, resolution_note: str | None) 
         {"id": req["id"]}, {"$set": update},
         return_document=True, projection={"_id": 0},
     )
-    # If accepted + OFF preference, auto-create a leave row of type OFF_REQ
+    # If accepted + OFF preference, upsert a leave row of type OFF_REQ
+    # (overwrites any existing AL/TRN entry for the same staff+date).
     if (
         status == "accepted"
         and req.get("shift_preference") == "OFF"
     ):
         try:
-            await db.leave.insert_one({
-                "id": str(uuid.uuid4()),
-                "staff_initials": req["staff_initials"],
-                "date": req["date"],
-                "type": "OFF_REQ",
-                "notes": f"From request: {req.get('notes', '')}",
-                "created_at": _now(),
-            })
-        except Exception:
-            pass  # already exists
+            notes = f"From request: {req.get('notes', '')}".rstrip(": ")
+            await db.leave.update_one(
+                {"staff_initials": req["staff_initials"], "date": req["date"]},
+                {
+                    "$set": {
+                        "type": "OFF_REQ",
+                        "notes": notes,
+                        "updated_at": _now(),
+                    },
+                    "$setOnInsert": {
+                        "id": str(uuid.uuid4()),
+                        "staff_initials": req["staff_initials"],
+                        "date": req["date"],
+                        "created_at": _now(),
+                    },
+                },
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to upsert OFF_REQ leave for %s on %s: %s",
+                           req.get("staff_initials"), req.get("date"), exc)
     return res
 
 
