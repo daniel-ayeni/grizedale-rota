@@ -1,38 +1,39 @@
 """
-Grizedale Rota Solver — Phase 0
+Grizedale Rota Solver — Phase 1
 ================================
 
-Builds a 4-week rota for a UK care home using Google OR-Tools CP-SAT.
+Updates from Phase 0 (per user feedback):
+    - **Hard** rule: Manager (J.C., is_admin_only=True) cannot be assigned
+      D, D*, N or * unless that cell is in `locked_cells`. (Was a soft penalty.)
+    - **Relaxed** night medication rule: at least ONE of the three night
+      staff (D*, *, N) must be medication-competent. It does NOT have to
+      be the waking-night staff specifically.
+    - **New hard** rule: every staff's total scheduled hours must be
+      >= (target_weekly_hours × weeks) − (AL_days × 12) − (TRN_days × 8) − 2.
+      Staff with target_weekly_hours == 0 (e.g. J.C.) are excluded.
+    - **New soft** rule: sleepover-capable staff prefer D* over D
+      (penalty 5 per `D` assignment for those staff).
 
-Decision variable: x[staff, day, shift_type] = 1 if staff works that shift on that day.
-Shift types: D, D*, N, *, OFF, AL, TRN.
+Each rule's mode (hard / soft / off) can be overridden per request via
+`payload["rules"]` — values are either booleans (legacy) or strings.
 
-Hard rules encoded:
-    - Exactly one shift type per (staff, day)
-    - Daily day cover: 2*D OR 1*D + 1*D*  (i.e. count_D + count_Dstar == 2 AND count_Dstar <= 1)
-    - Daily night cover: D* + N OR * + N  (i.e. count_N == 1 AND count_Dstar + count_star == 1)
-    - At least 1 medication-competent staff per shift (day shift, night shift)
-    - At least 1 first-aider per shift
-    - When D.A. or A.A. is on a shift, at least 1 female must also be on that shift
-      (i.e. males may not be the only two staff on a given shift)
-    - Capability flags (can_do_days / can_do_nights / can_do_sleepover) honoured
-    - N -> D forbidden across consecutive calendar days
-    - D* -> D* forbidden across consecutive calendar days
-    - Locked cells preserved exactly
-    - Annual leave (AL) and training (TRN) cells preserved exactly
+Rule keys understood:
+    first_aider_required          hard|soft|off  (default: hard)
+    med_competent_required        hard|soft|off  (default: hard)
+    no_male_pair_alone            hard|soft|off  (default: hard)
+    manager_no_shifts             hard|soft|off  (default: hard)
+    contracted_hours_min          hard|soft|off  (default: hard)
+    sleepover_preference          hard|soft|off  (default: soft)
+    preferred_off_days            hard|soft|off  (default: soft)
+    avoid_pairs                   hard|soft|off  (default: soft)
+    weekend_fairness              hard|soft|off  (default: soft)
 
-Soft rules (penalties in objective):
-    - Manager (J.C.) on weekday in any working shift -> very high penalty
-    - Deviation from target_weekly_hours -> penalty per hour
-    - Preferred-off-day violations -> penalty
-    - Avoid-pair violations on same shift -> penalty
-    - Weekend fairness (variance of weekend-off counts) -> penalty
+Soft-rule weights can be tuned via `payload["rule_weights"]` (numeric).
 """
 
 from __future__ import annotations
 
 import time
-from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -41,13 +42,14 @@ from ortools.sat.python import cp_model
 
 SHIFT_TYPES = ["D", "D*", "N", "*", "OFF", "AL", "TRN"]
 WORKING_SHIFTS = {"D", "D*", "N", "*"}
-DAY_COVER_SHIFTS = {"D", "D*"}        # contribute to daytime cover (08-20)
-NIGHT_COVER_SHIFTS = {"N", "D*", "*"}  # contribute to nighttime cover (sleepover or waking)
-SHIFT_HOURS = {
+DAY_COVER_SHIFTS = {"D", "D*"}
+NIGHT_COVER_SHIFTS = {"N", "D*", "*"}
+
+DEFAULT_SHIFT_HOURS = {
     "D": 12,
-    "D*": 14,   # 12h day + 2h sleepover allowance (counts toward weekly hours)
+    "D*": 14,
     "N": 12,
-    "*": 0,     # sleepover-only, no working hours
+    "*": 0,
     "OFF": 0,
     "AL": 0,
     "TRN": 0,
@@ -55,16 +57,32 @@ SHIFT_HOURS = {
 
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-# Penalty weights for soft rules
-W_MANAGER_WEEKDAY = 10_000
-W_HOURS_DEVIATION = 5     # per hour deviation from target_weekly_hours
-W_PREFERRED_OFF = 100     # per violation
-W_AVOID_PAIR = 200        # per shift where the pair is together
-W_WEEKEND_FAIRNESS = 25   # per unit variance proxy
+DEFAULT_WEIGHTS = {
+    "manager_no_shifts": 100_000,        # only used if rule is "soft"
+    "first_aider_required": 5_000,
+    "med_competent_required": 5_000,
+    "no_male_pair_alone": 5_000,
+    "contracted_hours_min": 50,          # only used if rule is "soft"
+    "sleepover_preference": 5,
+    "preferred_off_days": 20,
+    "avoid_pairs": 30,
+    "weekend_fairness": 10,
+    "hours_overage": 5,                  # always-on small penalty for over-target
+}
+
+DEFAULT_RULE_MODES = {
+    "first_aider_required": "hard",
+    "med_competent_required": "hard",
+    "no_male_pair_alone": "hard",
+    "manager_no_shifts": "hard",
+    "contracted_hours_min": "hard",
+    "sleepover_preference": "soft",
+    "preferred_off_days": "soft",
+    "avoid_pairs": "soft",
+    "weekend_fairness": "soft",
+}
 
 
-# ---------------------------------------------------------------------------
-# Helpers
 # ---------------------------------------------------------------------------
 def _date_range(start: date, weeks: int) -> list[date]:
     return [start + timedelta(days=i) for i in range(weeks * 7)]
@@ -74,11 +92,35 @@ def _parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-# ---------------------------------------------------------------------------
-# Solver
+def _normalise_mode(value: Any, default: str) -> str:
+    """Accept legacy bool or string ('hard'|'soft'|'off')."""
+    if value is True:
+        return default if default != "off" else "hard"
+    if value is False:
+        return "off"
+    if isinstance(value, str) and value.lower() in {"hard", "soft", "off"}:
+        return value.lower()
+    return default
+
+
+def _resolve_modes(rules: dict | None) -> dict[str, str]:
+    rules = rules or {}
+    out = {}
+    for k, default in DEFAULT_RULE_MODES.items():
+        out[k] = _normalise_mode(rules.get(k), default)
+    return out
+
+
+def _resolve_weights(weights: dict | None) -> dict[str, int]:
+    out = dict(DEFAULT_WEIGHTS)
+    for k, v in (weights or {}).items():
+        if isinstance(v, (int, float)):
+            out[k] = int(v)
+    return out
+
+
 # ---------------------------------------------------------------------------
 def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any]:
-    """Run the CP-SAT solver and return a structured response."""
     started = time.time()
 
     start_date = _parse_date(payload["rota_start_date"])
@@ -87,299 +129,324 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     n_days = len(days)
 
     staff_list = payload["staff"]
-    staff_by_initials = {s["initials"]: s for s in staff_list}
-    staff_initials = [s["initials"] for s in staff_list]
+    staff_by = {s["initials"]: s for s in staff_list}
+    staff_inits = [s["initials"] for s in staff_list]
 
-    rules = payload.get("rules", {}) or {}
-    require_med = rules.get("med_competent_required", True)
-    require_fa = rules.get("first_aider_required", True)
-    no_male_pair = rules.get("no_male_pair_alone", True)
-    manager_weekday_admin = rules.get("manager_weekday_admin", True)
+    modes = _resolve_modes(payload.get("rules"))
+    weights = _resolve_weights(payload.get("rule_weights"))
+    shift_hours = dict(DEFAULT_SHIFT_HOURS)
+    shift_hours.update(payload.get("shift_hours", {}) or {})
 
     leave = payload.get("leave", []) or []
     locked_cells = payload.get("locked_cells", []) or []
     avoid_pairs = payload.get("avoid_pairs", []) or []
 
-    # Index leave/locked by (initials, date_str)
+    # Forced cells indexed by (initials, date_str) -> shift
     forced_cells: dict[tuple[str, str], str] = {}
-    for entry in leave:
-        forced_cells[(entry["staff_initials"], entry["date"])] = entry.get("type", "AL")
-    for entry in locked_cells:
-        forced_cells[(entry["staff_initials"], entry["date"])] = entry["shift"]
+    for e in leave:
+        forced_cells[(e["staff_initials"], e["date"])] = e.get("type", "AL")
+    for e in locked_cells:
+        forced_cells[(e["staff_initials"], e["date"])] = e["shift"]
 
     model = cp_model.CpModel()
 
-    # x[s][d_idx][t] = bool var
+    # x[s][di][t]
     x: dict[str, dict[int, dict[str, cp_model.IntVar]]] = {}
-    for s in staff_initials:
+    for s in staff_inits:
         x[s] = {}
-        for di, dt in enumerate(days):
-            x[s][di] = {}
-            for t in SHIFT_TYPES:
-                x[s][di][t] = model.NewBoolVar(f"x_{s}_{di}_{t}")
-            # Exactly one shift type per (staff, day)
+        for di in range(n_days):
+            x[s][di] = {t: model.NewBoolVar(f"x_{s}_{di}_{t}") for t in SHIFT_TYPES}
             model.Add(sum(x[s][di][t] for t in SHIFT_TYPES) == 1)
 
     # Capability flags
-    for s in staff_initials:
-        info = staff_by_initials[s]
+    for s in staff_inits:
+        info = staff_by[s]
         for di in range(n_days):
-            if not info.get("can_do_days", False):
+            if not info.get("can_do_days"):
                 model.Add(x[s][di]["D"] == 0)
-            if not info.get("can_do_sleepover", False):
+            if not info.get("can_do_sleepover"):
                 model.Add(x[s][di]["D*"] == 0)
                 model.Add(x[s][di]["*"] == 0)
-            else:
-                # D* requires both day capability AND sleepover; * requires night/sleepover
-                if not info.get("can_do_days", False):
-                    model.Add(x[s][di]["D*"] == 0)
-            if not info.get("can_do_nights", False):
+            elif not info.get("can_do_days"):
+                model.Add(x[s][di]["D*"] == 0)
+            if not info.get("can_do_nights"):
                 model.Add(x[s][di]["N"] == 0)
-                # * (sleepover-only) is generally a night responsibility — allow
-                # only if can_do_sleepover; we don't gate on can_do_nights for *
-                # to keep flexibility.
 
     # Forced cells (locked / AL / TRN)
     for (init, d_str), shift in forced_cells.items():
-        if init not in staff_by_initials:
+        if init not in staff_by or shift not in SHIFT_TYPES:
             continue
-        if shift not in SHIFT_TYPES:
-            continue
-        # Find the day index
         try:
-            d_idx = days.index(_parse_date(d_str))
+            di = days.index(_parse_date(d_str))
         except ValueError:
             continue
         for t in SHIFT_TYPES:
-            model.Add(x[init][d_idx][t] == (1 if t == shift else 0))
+            model.Add(x[init][di][t] == (1 if t == shift else 0))
+
+    # AL and TRN are operator-driven only — solver may not choose them
+    # voluntarily. (Without this, the solver could assign AL to relax the
+    # contracted-hours hard rule.)
+    for s in staff_inits:
+        for di in range(n_days):
+            d_str = days[di].isoformat()
+            forced = forced_cells.get((s, d_str))
+            if forced != "AL":
+                model.Add(x[s][di]["AL"] == 0)
+            if forced != "TRN":
+                model.Add(x[s][di]["TRN"] == 0)
+
+    # Manager hard rule: J.C. (or any is_admin_only) cannot work shifts
+    # unless cell is locked.
+    if modes["manager_no_shifts"] == "hard":
+        for s in staff_inits:
+            info = staff_by[s]
+            if not info.get("is_admin_only"):
+                continue
+            for di in range(n_days):
+                d_str = days[di].isoformat()
+                if (s, d_str) in forced_cells:
+                    continue  # locked override allowed
+                for t in WORKING_SHIFTS:
+                    model.Add(x[s][di][t] == 0)
 
     # Daily cover constraints
     for di in range(n_days):
-        count_D = sum(x[s][di]["D"] for s in staff_initials)
-        count_Dstar = sum(x[s][di]["D*"] for s in staff_initials)
-        count_N = sum(x[s][di]["N"] for s in staff_initials)
-        count_star = sum(x[s][di]["*"] for s in staff_initials)
+        cD = sum(x[s][di]["D"] for s in staff_inits)
+        cDs = sum(x[s][di]["D*"] for s in staff_inits)
+        cN = sum(x[s][di]["N"] for s in staff_inits)
+        cStar = sum(x[s][di]["*"] for s in staff_inits)
 
-        # Day: 2*D OR 1*D + 1*D*  =>  count_D + count_Dstar == 2 AND count_Dstar <= 1
-        model.Add(count_D + count_Dstar == 2)
-        model.Add(count_Dstar <= 1)
-        # Night: D* + N OR * + N  =>  count_N == 1 AND count_Dstar + count_star == 1
-        model.Add(count_N == 1)
-        model.Add(count_Dstar + count_star == 1)
+        # Day cover: 2D OR 1D + 1D* (always hard)
+        model.Add(cD + cDs == 2)
+        model.Add(cDs <= 1)
+        # Night cover: D*+N OR *+N (always hard)
+        model.Add(cN == 1)
+        model.Add(cDs + cStar == 1)
 
-        # Per-shift coverage: med-competent + first-aider
-        med_staff = [s for s in staff_initials if staff_by_initials[s].get("medication_competent")]
-        fa_staff = [s for s in staff_initials if staff_by_initials[s].get("first_aider")]
+    # Per-shift med-competent + first-aider
+    soft_terms: list[cp_model.IntVar | int] = []
+    med_staff = [s for s in staff_inits if staff_by[s].get("medication_competent")]
+    fa_staff = [s for s in staff_inits if staff_by[s].get("first_aider")]
+    males = [s for s in staff_inits if staff_by[s].get("gender") == "M"]
+    females = [s for s in staff_inits if staff_by[s].get("gender") == "F"]
 
-        if require_med:
-            # Day shift must include >=1 med-competent
-            model.Add(sum(x[s][di]["D"] + x[s][di]["D*"] for s in med_staff) >= 1)
-            # Night shift must include >=1 med-competent (D*, *, or N)
-            model.Add(sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in med_staff) >= 1)
+    for di in range(n_days):
+        # Day-shift med (sum over D + D* of med staff)
+        med_day = sum(x[s][di]["D"] + x[s][di]["D*"] for s in med_staff)
+        # Night-shift med — RELAXED: any of N, D*, *
+        med_night = sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in med_staff)
+        if modes["med_competent_required"] == "hard":
+            model.Add(med_day >= 1)
+            model.Add(med_night >= 1)
+        elif modes["med_competent_required"] == "soft":
+            miss_day = model.NewBoolVar(f"miss_med_day_{di}")
+            miss_night = model.NewBoolVar(f"miss_med_night_{di}")
+            model.Add(med_day == 0).OnlyEnforceIf(miss_day)
+            model.Add(med_day >= 1).OnlyEnforceIf(miss_day.Not())
+            model.Add(med_night == 0).OnlyEnforceIf(miss_night)
+            model.Add(med_night >= 1).OnlyEnforceIf(miss_night.Not())
+            soft_terms.append(weights["med_competent_required"] * miss_day)
+            soft_terms.append(weights["med_competent_required"] * miss_night)
 
-        if require_fa:
-            model.Add(sum(x[s][di]["D"] + x[s][di]["D*"] for s in fa_staff) >= 1)
-            model.Add(sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in fa_staff) >= 1)
+        # First-aider
+        fa_day = sum(x[s][di]["D"] + x[s][di]["D*"] for s in fa_staff)
+        fa_night = sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in fa_staff)
+        if modes["first_aider_required"] == "hard":
+            model.Add(fa_day >= 1)
+            model.Add(fa_night >= 1)
+        elif modes["first_aider_required"] == "soft":
+            miss_day = model.NewBoolVar(f"miss_fa_day_{di}")
+            miss_night = model.NewBoolVar(f"miss_fa_night_{di}")
+            model.Add(fa_day == 0).OnlyEnforceIf(miss_day)
+            model.Add(fa_day >= 1).OnlyEnforceIf(miss_day.Not())
+            model.Add(fa_night == 0).OnlyEnforceIf(miss_night)
+            model.Add(fa_night >= 1).OnlyEnforceIf(miss_night.Not())
+            soft_terms.append(weights["first_aider_required"] * miss_day)
+            soft_terms.append(weights["first_aider_required"] * miss_night)
 
-        # No-male-pair-alone: when any male is on a shift, at least 1 female
-        # must also be on the same shift.
-        if no_male_pair:
-            males = [s for s in staff_initials if staff_by_initials[s].get("gender") == "M"]
-            females = [s for s in staff_initials if staff_by_initials[s].get("gender") == "F"]
+        # No-male-pair-alone
+        if modes["no_male_pair_alone"] != "off" and males and females:
+            males_day = sum(x[s][di]["D"] + x[s][di]["D*"] for s in males)
+            females_day = sum(x[s][di]["D"] + x[s][di]["D*"] for s in females)
+            males_night = sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in males)
+            females_night = sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in females)
 
-            # Day shift
-            if males and females:
-                # If any male on day -> females_on_day >= 1
-                # Sum over males of day-presence is in [0, 2].
-                males_on_day = sum(x[s][di]["D"] + x[s][di]["D*"] for s in males)
-                females_on_day = sum(x[s][di]["D"] + x[s][di]["D*"] for s in females)
-                # If males_on_day >= 1 then females_on_day >= 1
-                # Equivalent: females_on_day >= 1 OR males_on_day == 0
-                # Encode using big-M with bool
+            if modes["no_male_pair_alone"] == "hard":
                 any_male_day = model.NewBoolVar(f"any_male_day_{di}")
-                model.Add(males_on_day >= 1).OnlyEnforceIf(any_male_day)
-                model.Add(males_on_day == 0).OnlyEnforceIf(any_male_day.Not())
-                model.Add(females_on_day >= 1).OnlyEnforceIf(any_male_day)
+                model.Add(males_day >= 1).OnlyEnforceIf(any_male_day)
+                model.Add(males_day == 0).OnlyEnforceIf(any_male_day.Not())
+                model.Add(females_day >= 1).OnlyEnforceIf(any_male_day)
 
-                # Night shift
-                males_on_night = sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in males)
-                females_on_night = sum(x[s][di]["D*"] + x[s][di]["*"] + x[s][di]["N"] for s in females)
                 any_male_night = model.NewBoolVar(f"any_male_night_{di}")
-                model.Add(males_on_night >= 1).OnlyEnforceIf(any_male_night)
-                model.Add(males_on_night == 0).OnlyEnforceIf(any_male_night.Not())
-                model.Add(females_on_night >= 1).OnlyEnforceIf(any_male_night)
+                model.Add(males_night >= 1).OnlyEnforceIf(any_male_night)
+                model.Add(males_night == 0).OnlyEnforceIf(any_male_night.Not())
+                model.Add(females_night >= 1).OnlyEnforceIf(any_male_night)
+            else:  # soft
+                viol_day = model.NewBoolVar(f"male_pair_day_{di}")
+                model.Add(males_day >= 1).OnlyEnforceIf(viol_day)
+                model.Add(females_day == 0).OnlyEnforceIf(viol_day)
+                soft_terms.append(weights["no_male_pair_alone"] * viol_day)
+                viol_night = model.NewBoolVar(f"male_pair_night_{di}")
+                model.Add(males_night >= 1).OnlyEnforceIf(viol_night)
+                model.Add(females_night == 0).OnlyEnforceIf(viol_night)
+                soft_terms.append(weights["no_male_pair_alone"] * viol_night)
 
-    # Consecutive-day constraints
-    for s in staff_initials:
+    # Consecutive-day rules (always hard per spec)
+    for s in staff_inits:
         for di in range(n_days - 1):
-            # N -> D forbidden
             model.Add(x[s][di]["N"] + x[s][di + 1]["D"] <= 1)
-            # D* -> D* forbidden
             model.Add(x[s][di]["D*"] + x[s][di + 1]["D*"] <= 1)
 
-    # ----------------------------------------------------------------------
-    # Objective: minimise weighted soft-rule violations
-    # ----------------------------------------------------------------------
-    penalty_terms: list[cp_model.IntVar | int] = []
+    # Contracted hours (>= target*weeks - AL*12 - TRN*8 - 2)
+    for s in staff_inits:
+        info = staff_by[s]
+        target_total = int(info.get("target_weekly_hours", 0)) * weeks
+        if target_total <= 0:
+            continue  # skip admin-only / zero-hour staff
 
-    # 1. Manager weekday admin (very high penalty if J.C. has any working shift on Mon–Fri)
-    if manager_weekday_admin:
-        for s in staff_initials:
-            info = staff_by_initials[s]
-            if not info.get("manager_weekday_admin"):
+        # Count AL & TRN days for this staff (forced + chosen by solver)
+        al_var = sum(x[s][di]["AL"] for di in range(n_days))
+        trn_var = sum(x[s][di]["TRN"] for di in range(n_days))
+        actual = sum(
+            shift_hours[t] * x[s][di][t] for di in range(n_days) for t in SHIFT_TYPES
+        )
+        # min_required = target_total - 12*AL - 8*TRN - 2
+        # actual + 12*AL + 8*TRN + 2 >= target_total
+        if modes["contracted_hours_min"] == "hard":
+            model.Add(actual + 12 * al_var + 8 * trn_var + 2 >= target_total)
+        elif modes["contracted_hours_min"] == "soft":
+            short = model.NewIntVar(0, 1000, f"hours_short_{s}")
+            model.Add(actual + 12 * al_var + 8 * trn_var + short >= target_total - 2)
+            soft_terms.append(weights["contracted_hours_min"] * short)
+
+        # Always penalise overage softly so solver doesn't blow past the target
+        over = model.NewIntVar(0, 1000, f"hours_over_{s}")
+        model.Add(actual - target_total <= over)
+        soft_terms.append(weights["hours_overage"] * over)
+
+    # D* preference for sleepover-capable staff
+    if modes["sleepover_preference"] != "off":
+        for s in staff_inits:
+            if not staff_by[s].get("can_do_sleepover"):
+                continue
+            for di in range(n_days):
+                # Penalty for D when staff is sleepover-capable
+                if modes["sleepover_preference"] == "hard":
+                    # "hard" means: never assign D if D* is allowed?
+                    # That would be too restrictive — interpret hard
+                    # as a 100x weight instead.
+                    soft_terms.append(weights["sleepover_preference"] * 100 * x[s][di]["D"])
+                else:
+                    soft_terms.append(weights["sleepover_preference"] * x[s][di]["D"])
+
+    # Preferred off days
+    if modes["preferred_off_days"] != "off":
+        for s in staff_inits:
+            prefs = {p.lower()[:3] for p in (staff_by[s].get("preferred_off_days") or [])}
+            if not prefs:
                 continue
             for di, dt in enumerate(days):
-                if dt.weekday() < 5:  # Mon-Fri
-                    working = sum(x[s][di][t] for t in WORKING_SHIFTS)
-                    penalty_terms.append(W_MANAGER_WEEKDAY * working)
+                if DOW_NAMES[dt.weekday()].lower() in prefs:
+                    work = sum(x[s][di][t] for t in WORKING_SHIFTS)
+                    if modes["preferred_off_days"] == "hard":
+                        model.Add(work == 0)
+                    else:
+                        soft_terms.append(weights["preferred_off_days"] * work)
 
-    # 2. Hours target deviation
-    for s in staff_initials:
-        info = staff_by_initials[s]
-        target_total = info.get("target_weekly_hours", 0) * weeks
-        actual = sum(SHIFT_HOURS[t] * x[s][di][t] for di in range(n_days) for t in SHIFT_TYPES)
-        # |actual - target| via two slack vars
-        over = model.NewIntVar(0, 1000, f"hours_over_{s}")
-        under = model.NewIntVar(0, 1000, f"hours_under_{s}")
-        model.Add(actual - target_total == over - under)
-        penalty_terms.append(W_HOURS_DEVIATION * over)
-        penalty_terms.append(W_HOURS_DEVIATION * under)
+    # Avoid pairs
+    if modes["avoid_pairs"] != "off":
+        for pair in avoid_pairs:
+            a, b = pair.get("a"), pair.get("b")
+            if a not in staff_by or b not in staff_by:
+                continue
+            for di in range(n_days):
+                a_day = x[a][di]["D"] + x[a][di]["D*"]
+                b_day = x[b][di]["D"] + x[b][di]["D*"]
+                both_day = model.NewBoolVar(f"pair_day_{a}_{b}_{di}")
+                model.Add(a_day + b_day >= 2).OnlyEnforceIf(both_day)
+                model.Add(a_day + b_day <= 1).OnlyEnforceIf(both_day.Not())
+                if modes["avoid_pairs"] == "hard":
+                    model.Add(both_day == 0)
+                else:
+                    soft_terms.append(weights["avoid_pairs"] * both_day)
 
-    # 3. Preferred off days
-    for s in staff_initials:
-        info = staff_by_initials[s]
-        prefs = info.get("preferred_off_days", []) or []
-        if not prefs:
-            continue
-        pref_set = set(p.lower()[:3] for p in prefs)  # e.g. "Sat", "sun"
-        for di, dt in enumerate(days):
-            dow = DOW_NAMES[dt.weekday()].lower()
-            if dow in pref_set:
-                working = sum(x[s][di][t] for t in WORKING_SHIFTS)
-                penalty_terms.append(W_PREFERRED_OFF * working)
+                a_night = x[a][di]["D*"] + x[a][di]["*"] + x[a][di]["N"]
+                b_night = x[b][di]["D*"] + x[b][di]["*"] + x[b][di]["N"]
+                both_night = model.NewBoolVar(f"pair_night_{a}_{b}_{di}")
+                model.Add(a_night + b_night >= 2).OnlyEnforceIf(both_night)
+                model.Add(a_night + b_night <= 1).OnlyEnforceIf(both_night.Not())
+                if modes["avoid_pairs"] == "hard":
+                    model.Add(both_night == 0)
+                else:
+                    soft_terms.append(weights["avoid_pairs"] * both_night)
 
-    # 4. Avoid pairs
-    for pair in avoid_pairs:
-        a = pair.get("a")
-        b = pair.get("b")
-        if a not in staff_by_initials or b not in staff_by_initials:
-            continue
-        for di in range(n_days):
-            # Together on day shift
-            a_day = x[a][di]["D"] + x[a][di]["D*"]
-            b_day = x[b][di]["D"] + x[b][di]["D*"]
-            both_day = model.NewBoolVar(f"pair_day_{a}_{b}_{di}")
-            model.Add(a_day + b_day >= 2).OnlyEnforceIf(both_day)
-            model.Add(a_day + b_day <= 1).OnlyEnforceIf(both_day.Not())
-            penalty_terms.append(W_AVOID_PAIR * both_day)
-            # Together on night shift
-            a_night = x[a][di]["D*"] + x[a][di]["*"] + x[a][di]["N"]
-            b_night = x[b][di]["D*"] + x[b][di]["*"] + x[b][di]["N"]
-            both_night = model.NewBoolVar(f"pair_night_{a}_{b}_{di}")
-            model.Add(a_night + b_night >= 2).OnlyEnforceIf(both_night)
-            model.Add(a_night + b_night <= 1).OnlyEnforceIf(both_night.Not())
-            penalty_terms.append(W_AVOID_PAIR * both_night)
+    # Weekend fairness
+    if modes["weekend_fairness"] != "off":
+        weekend_idx = [di for di, dt in enumerate(days) if dt.weekday() >= 5]
+        if weekend_idx:
+            for s in staff_inits:
+                info = staff_by[s]
+                shifts_per_week = info.get("target_weekly_hours", 36) / 12.0
+                target_ww = round(shifts_per_week * len(weekend_idx) / 7)
+                target_ww = max(0, min(target_ww, len(weekend_idx)))
+                ww = sum(x[s][di][t] for di in weekend_idx for t in WORKING_SHIFTS)
+                over = model.NewIntVar(0, len(weekend_idx), f"we_over_{s}")
+                under = model.NewIntVar(0, len(weekend_idx), f"we_under_{s}")
+                model.Add(ww - target_ww == over - under)
+                soft_terms.append(weights["weekend_fairness"] * over)
+                soft_terms.append(weights["weekend_fairness"] * under)
 
-    # 5. Weekend fairness — equalise count of weekends each staff has fully off.
-    # Approximate by penalising deviation of "weekend working days" from the mean.
-    weekend_indices = [di for di, dt in enumerate(days) if dt.weekday() >= 5]
-    if weekend_indices and len(staff_initials) > 0:
-        weekend_work_per_staff = {}
-        for s in staff_initials:
-            ww = sum(x[s][di][t] for di in weekend_indices for t in WORKING_SHIFTS)
-            weekend_work_per_staff[s] = ww
-        # Mean (integer): total weekend slots required ~= 4 staff * 8 weekend days = 32
-        # We'll use pairwise absolute differences with a representative
-        # baseline: for each staff, deviation from average expressed as
-        # |ww - target_ww| where target_ww = round(target_weekly_hours / 12 * (weekend_days / 7))
-        for s in staff_initials:
-            info = staff_by_initials[s]
-            shifts_per_week = info.get("target_weekly_hours", 36) / 12.0
-            target_ww = round(shifts_per_week * len(weekend_indices) / 7)
-            target_ww = max(0, min(target_ww, len(weekend_indices)))
-            over = model.NewIntVar(0, len(weekend_indices), f"we_over_{s}")
-            under = model.NewIntVar(0, len(weekend_indices), f"we_under_{s}")
-            model.Add(weekend_work_per_staff[s] - target_ww == over - under)
-            penalty_terms.append(W_WEEKEND_FAIRNESS * over)
-            penalty_terms.append(W_WEEKEND_FAIRNESS * under)
+    if soft_terms:
+        model.Minimize(sum(soft_terms))
 
-    if penalty_terms:
-        model.Minimize(sum(penalty_terms))
-
-    # ----------------------------------------------------------------------
-    # Solve
-    # ----------------------------------------------------------------------
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_s)
     solver.parameters.num_search_workers = 8
-
     status = solver.Solve(model)
-    elapsed_ms = int((time.time() - started) * 1000)
+    elapsed = int((time.time() - started) * 1000)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return _build_failure_response(
-            status=status,
-            payload=payload,
-            elapsed_ms=elapsed_ms,
-            forced_cells=forced_cells,
-        )
+        return _build_failure_response(status, payload, elapsed, forced_cells)
 
-    # Extract solution
-    rota: list[dict[str, Any]] = []
+    rota = []
     for di, dt in enumerate(days):
         assignments = []
-        for s in staff_initials:
-            chosen = None
-            for t in SHIFT_TYPES:
-                if solver.Value(x[s][di][t]) == 1:
-                    chosen = t
-                    break
+        for s in staff_inits:
+            chosen = next(t for t in SHIFT_TYPES if solver.Value(x[s][di][t]) == 1)
             assignments.append({"staff_initials": s, "shift": chosen})
-        rota.append(
-            {
-                "date": dt.isoformat(),
-                "day_of_week": DOW_NAMES[dt.weekday()],
-                "assignments": assignments,
-            }
-        )
+        rota.append({
+            "date": dt.isoformat(),
+            "day_of_week": DOW_NAMES[dt.weekday()],
+            "assignments": assignments,
+        })
 
-    # Warnings: hours deviations
-    warnings: list[str] = []
-    for s in staff_initials:
-        info = staff_by_initials[s]
+    warnings = []
+    for s in staff_inits:
+        info = staff_by[s]
         target_total = info.get("target_weekly_hours", 0) * weeks
         actual_h = 0
         for di in range(n_days):
             for t in SHIFT_TYPES:
                 if solver.Value(x[s][di][t]) == 1:
-                    actual_h += SHIFT_HOURS[t]
-        if actual_h != target_total:
+                    actual_h += shift_hours[t]
+        if target_total > 0 and abs(actual_h - target_total) > 0:
             warnings.append(
                 f"{s} assigned {actual_h}h vs target {target_total}h over {weeks}w"
             )
-
-    soft_score = int(solver.ObjectiveValue()) if penalty_terms else 0
 
     return {
         "success": True,
         "rota": rota,
         "warnings": warnings,
-        "soft_violations_score": soft_score,
-        "solve_time_ms": elapsed_ms,
+        "soft_violations_score": int(solver.ObjectiveValue()) if soft_terms else 0,
+        "solve_time_ms": elapsed,
         "solver_status": solver.StatusName(status),
+        "rule_modes": modes,
     }
 
 
 # ---------------------------------------------------------------------------
-# Failure diagnostics
-# ---------------------------------------------------------------------------
-def _build_failure_response(
-    status: int,
-    payload: dict,
-    elapsed_ms: int,
-    forced_cells: dict,
-) -> dict[str, Any]:
-    """Produce a useful 'why no solution' response when the solver fails."""
+def _build_failure_response(status, payload, elapsed_ms, forced_cells):
     name_map = {
         cp_model.UNKNOWN: "UNKNOWN",
         cp_model.MODEL_INVALID: "MODEL_INVALID",
@@ -387,41 +454,35 @@ def _build_failure_response(
     }
     status_name = name_map.get(status, str(status))
 
-    # Quick feasibility analysis: per day, compute available staff for cover
     start_date = _parse_date(payload["rota_start_date"])
     weeks = int(payload.get("weeks", 4))
     days = _date_range(start_date, weeks)
     staff_list = payload["staff"]
-    staff_by_initials = {s["initials"]: s for s in staff_list}
+    staff_by = {s["initials"]: s for s in staff_list}
 
-    blocking: list[dict[str, Any]] = []
-
+    blocking = []
     for dt in days:
         d_str = dt.isoformat()
-        # Determine staff who are forced unavailable that day (AL / TRN)
         unavailable = set()
-        forced_shift = {}
         for (init, d), shift in forced_cells.items():
-            if d == d_str:
-                forced_shift[init] = shift
-                if shift in {"AL", "TRN", "OFF"}:
-                    unavailable.add(init)
-        available = [
-            s for s in staff_by_initials.values()
-            if s["initials"] not in unavailable
-        ]
-        day_capable = [s for s in available if s.get("can_do_days")]
-        night_capable = [s for s in available if s.get("can_do_nights") or s.get("can_do_sleepover")]
-        med_day = [s for s in day_capable if s.get("medication_competent")]
-        med_night = [s for s in night_capable if s.get("medication_competent")]
-        fa_day = [s for s in day_capable if s.get("first_aider")]
-        fa_night = [s for s in night_capable if s.get("first_aider")]
+            if d == d_str and shift in {"AL", "TRN", "OFF"}:
+                unavailable.add(init)
+        avail = [s for s in staff_by.values() if s["initials"] not in unavailable]
+        # Manager treated as unavailable for solver purposes
+        avail_for_shifts = [s for s in avail if not s.get("is_admin_only")]
+        day_cap = [s for s in avail_for_shifts if s.get("can_do_days")]
+        night_cap = [s for s in avail_for_shifts if s.get("can_do_nights") or s.get("can_do_sleepover")]
+        med_day = [s for s in day_cap if s.get("medication_competent")]
+        # Relaxed: any night-side staff being med-competent counts
+        med_night = [s for s in night_cap if s.get("medication_competent")]
+        fa_day = [s for s in day_cap if s.get("first_aider")]
+        fa_night = [s for s in night_cap if s.get("first_aider")]
 
         problems = []
-        if len(day_capable) < 2:
-            problems.append(f"only {len(day_capable)} day-capable staff available (need 2)")
-        if len(night_capable) < 2:
-            problems.append(f"only {len(night_capable)} night-capable staff available (need 2)")
+        if len(day_cap) < 2:
+            problems.append(f"only {len(day_cap)} day-capable staff available (need 2)")
+        if len(night_cap) < 2:
+            problems.append(f"only {len(night_cap)} night-capable staff available (need 2)")
         if not med_day:
             problems.append("no medication-competent staff available for day shift")
         if not med_night:
@@ -435,15 +496,12 @@ def _build_failure_response(
 
     if blocking:
         first = blocking[0]
-        reason = (
-            f"{first['day_of_week']} {first['date']}: "
-            + "; ".join(first["problems"])
-        )
+        reason = f"{first['day_of_week']} {first['date']}: " + "; ".join(first["problems"])
     else:
         reason = (
-            f"Solver returned {status_name}. Constraints are mutually unsatisfiable "
-            "but no single-day blocker detected — likely a multi-day conflict "
-            "(e.g. consecutive-shift / weekly-hours interactions)."
+            f"Solver returned {status_name}. No single-day blocker found — "
+            "likely a multi-day conflict (consecutive-shift, contracted-hours, "
+            "or a combination)."
         )
 
     return {

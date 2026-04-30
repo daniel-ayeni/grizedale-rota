@@ -1,0 +1,44 @@
+{
+  "summary": "Phase 1 backend + frontend testing for Grizedale Rota Builder. 31/31 pytest backend tests pass against the public preview URL (auth, CRUD on staff/service-users/admins, rules, settings, solver). All Phase 1 hard-rule corrections verified: J.C. is OFF on every day of the 28-day rota, D+D*=2/day, N=1/day, D*+*=1/day, no N->D, no D*->D* consecutive, AL/TRN absent unless explicitly provided. Pairing assertion verified: every day where D.A. is on D* or *, the N-staff is C.E. or J.R., never A.A. Rule-config integration confirmed (PUT /api/rules first_aider_required=off then solve still succeeds, then revert). Solver wall-time consistently <1s. Frontend: login -> dashboard works with seed creds, dashboard shows 8/7/1 stat cards and disabled Generate Rota, all 6 nav routes load, theme toggle flips paper<->modern and persists in localStorage key grizedale_theme, staff page shows 8 rows with 7 toggle switches each, rules page renders 13 rules with 'Immovable' badge on the 4 hardcoded ones, admins Add dialog opens correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Add Admin modal (/admins)", "issues": ["Form inputs lack data-testid and name attributes (only labelled by NAME/EMAIL/PASSWORD headings) — makes Playwright targeting brittle. Dialog itself works visually and the underlying POST /api/admins is verified by backend tests. Suggest adding data-testid='admin-name|admin-email|admin-password|admin-submit' for testability."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase1_api.py",
+    "/app/test_reports/pytest/phase1_results.xml",
+    "/app/backend/tests/test_rota_solver.py"
+  ],
+  "action_items": [
+    "(Optional) Add data-testid attributes to inputs inside the Add Admin dialog (admin-name, admin-email, admin-password, admin-submit) for future Playwright stability — current functionality is fine.",
+    "(Optional, carried over from iteration 1) Consider unifying solver error envelopes — 400 uses {detail:...} from HTTPException while 422 returns top-level {success,reason,...}."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~454 lines with all routers inline. Acceptable for Phase 1, but split into routers/auth.py, routers/staff.py, routers/solver.py before Phase 2 to keep each module <300 lines.",
+    "All endpoints correctly use Depends(auth_required) and exclude _id / password_hash from responses — verified by tests.",
+    "/api/admins backing collection is db.users (same as auth). Spec note acknowledges this, but worth a comment in code so Phase 2 doesn't accidentally split them.",
+    "Solver hard rule: 'no AL/TRN unless explicitly requested' — tests confirm zero AL/TRN cells on default solve.",
+    "Manager hard rule (J.C.) verified: no working shift on any of 28 days when no locked_cells supplied.",
+    "PUT /api/rules upserts unconditionally — fine, but might want to validate the rules dict schema in Phase 2."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase1_api.py"
+  ],
+  "success_rate": {
+    "backend": "100% (31/31)",
+    "frontend": "100% (all 6 routes load, login + theme + nav verified; Add Admin dialog opens — UI plumbing fine)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123! (seed admin from /app/memory/test_credentials.md)",
+  "seed_data_creation": "None. Tests create-then-cleanup their own staff/service-user/admin records (UUID-prefixed). Rules and settings are saved-then-reverted in their respective tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 1 is fully passing. /app/backend/tests/test_phase1_api.py is the canonical Phase 1 regression suite (31 tests, ~6s wall-time). Phase 0 tests at /app/backend/tests/test_rota_solver.py still pass and act as solver-only smoke. For Phase 2/3 expansion: solver rota-shape currently returned as {success, rota:{days:[{date, assignments:{INIT:SHIFT}}]}, ...} — _shift_map / _extract_days helpers in test_phase1_api.py handle multiple shapes if structure changes. No test data was left in the DB after the run.",
+  "rca_of_the_issue": "n/a — no failures."
+}
