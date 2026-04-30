@@ -86,9 +86,9 @@ def assert_rota_valid(payload: dict, result: dict) -> None:
 
     forced = {}
     for e in payload.get("leave", []):
-        forced[(e["staff_initials"], e["date"])] = e.get("type", "AL")
+        forced[(e["date"], e["staff_initials"])] = e.get("type", "AL")
     for e in payload.get("locked_cells", []):
-        forced[(e["staff_initials"], e["date"])] = e["shift"]
+        forced[(e["date"], e["staff_initials"])] = e["shift"]
 
     cell = {(d["date"], a["staff_initials"]): a["shift"] for d in rota for a in d["assignments"]}
 
@@ -206,6 +206,68 @@ def main() -> int:
     result = solve_rota(payload, time_limit_s=10)
     print_rota_grid(payload, result)
     assert_rota_valid(payload, result)
+
+    # =====================================================================
+    # Forced-scenario test: when D.A. is locked on D* on specific dates,
+    # the N-staff for those dates MUST be C.E. or J.R. (never A.A.).
+    # This gives positive evidence for the no-male-pair-on-night rule —
+    # we are explicitly forcing D.A. onto the night side and verifying
+    # the solver picks a female N partner.
+    #
+    # NOTE on seed flags: with the current seed, A.A. is the only
+    # nights-capable first-aider (C.E. and J.R. are not FAs).  When
+    # D.A.=D* is locked, no-male-pair rules out A.A. on N — but FA-on-night
+    # then has no feasible candidate (D.A. is not FA either).  To isolate
+    # the male-pair rule from the FA-on-night rule, this test temporarily
+    # flags C.E. as first_aider=true (in-memory copy only — the seed file
+    # is untouched).  Realistically, the senior Night Support staff would
+    # likely BE first-aid trained, so this is also a heads-up to consider
+    # making it permanent in the seed.
+    # =====================================================================
+    print("\n=== FORCED-SCENARIO TEST: D.A. locked on D* ===")
+    forced_payload = json.loads(SEED_PATH.read_text())
+    for s in forced_payload["staff"]:
+        if s["initials"] == "C.E.":
+            s["first_aider"] = True   # test-only override
+            print("  (test-only override: C.E.first_aider := true to isolate male-pair rule from FA rule)")
+            break
+    forced_dates = ["2026-04-22", "2026-04-29"]
+    forced_payload["locked_cells"] = [
+        {"staff_initials": "D.A.", "date": d, "shift": "D*"} for d in forced_dates
+    ]
+    print(f"Locked: D.A. = D* on {', '.join(forced_dates)}")
+    forced_result = solve_rota(forced_payload, time_limit_s=10)
+    assert forced_result.get("success"), (
+        f"forced-scenario solver failed: {forced_result.get('reason')}"
+    )
+
+    forced_cell = {
+        (d["date"], a["staff_initials"]): a["shift"]
+        for d in forced_result["rota"]
+        for a in d["assignments"]
+    }
+    for d_str in forced_dates:
+        assert forced_cell[(d_str, "D.A.")] == "D*", (
+            f"{d_str}: D.A. should be locked on D*, got {forced_cell[(d_str, 'D.A.')]}"
+        )
+        n_staff = next(
+            (a["staff_initials"] for a in next(d for d in forced_result["rota"] if d["date"] == d_str)["assignments"] if a["shift"] == "N"),
+            None,
+        )
+        assert n_staff in {"C.E.", "J.R."}, (
+            f"{d_str}: D.A. is locked on D* but N is {n_staff} — expected C.E. or J.R."
+        )
+        # And specifically NOT A.A.
+        assert n_staff != "A.A.", (
+            f"{d_str}: D.A. locked on D* and N=A.A. — male-pair-alone rule violated!"
+        )
+        print(f"  {d_str}: D.A.=D*, N={n_staff} -> OK (male-pair-on-night rule enforced; A.A. excluded)")
+
+    # Run the full assertion suite on the forced result too
+    assert_rota_valid(forced_payload, forced_result)
+    print("[OK] forced-scenario hard-rule assertions passed")
+    print(f"Forced solve time: {forced_result.get('solve_time_ms')} ms")
+
     return 0
 
 

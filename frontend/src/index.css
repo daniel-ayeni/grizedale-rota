@@ -59,30 +59,36 @@ html[data-theme="paper"] {
 }
 
 html[data-theme="modern"] {
-    /* Modern theme — slate + teal accent */
-    --bg: 220 14% 98%;
-    --bg-elev: 0 0% 100%;
-    --fg: 222 30% 12%;
-    --fg-muted: 220 10% 42%;
-    --border: 220 14% 90%;
-    --border-strong: 220 14% 80%;
+    /* Modern theme — clean slate + teal, distinctly NOT paper */
+    --bg: 210 40% 98%;               /* slate-50 #f8fafc */
+    --bg-elev: 0 0% 100%;            /* white cards */
+    --bg-sidebar: 222 47% 11%;       /* slate-900 dark sidebar */
+    --bg-sidebar-fg: 210 40% 98%;    /* sidebar text */
+    --fg: 222 47% 11%;               /* slate-900 body text */
+    --fg-muted: 215 16% 47%;         /* slate-500 */
+    --border: 214 32% 91%;           /* slate-200 */
+    --border-strong: 215 20% 65%;    /* slate-400 */
 
-    --section: 173 80% 32%;          /* teal-700 */
+    /* No coloured section band in modern — flat heading on card */
+    --section: 173 80% 32%;          /* teal-600 — used for decorative accents
+                                        like icon backgrounds. The section-header
+                                        class itself is overridden below to drop
+                                        the band entirely. */
     --section-fg: 0 0% 100%;
 
-    --primary: 173 80% 32%;
+    --primary: 173 80% 32%;          /* teal-600 #0d9488 */
     --primary-fg: 0 0% 100%;
 
     --accent-pink: 339 82% 52%;
     --accent-green: 150 47% 38%;
     --accent-blue: 220 80% 35%;
     --accent-bright-blue: 200 90% 50%;
-    --accent-yellow: 48 100% 60%;
+    --accent-yellow: 48 95% 55%;
     --accent-red: 0 75% 55%;
     --accent-purple: 270 50% 55%;
 
     --ring: 173 80% 32%;
-    --radius: 0.625rem;
+    --radius: 0.5rem;
 
     --background: var(--bg);
     --foreground: var(--fg);
@@ -90,18 +96,18 @@ html[data-theme="modern"] {
     --card-foreground: var(--fg);
     --popover: 0 0% 100%;
     --popover-foreground: var(--fg);
-    --secondary: 220 14% 95%;
+    --secondary: 214 32% 91%;
     --secondary-foreground: var(--fg);
-    --muted: 220 14% 95%;
+    --muted: 210 40% 96%;
     --muted-foreground: var(--fg-muted);
-    --accent: 173 80% 92%;
+    --accent: 173 80% 95%;
     --accent-foreground: 173 80% 22%;
     --destructive: 0 75% 55%;
     --destructive-foreground: 0 0% 100%;
-    --input: 220 14% 88%;
+    --input: 214 32% 91%;
     --primary-foreground: var(--primary-fg);
 
-    --font-display: 'Outfit', 'Inter', sans-serif;
+    --font-display: 'Inter', -apple-system, sans-serif;
     --font-body: 'Inter', -apple-system, sans-serif;
 }
 
@@ -137,6 +143,11 @@ html[data-theme="paper"] body {
             transparent 32px);
 }
 
+/* Modern: ensure no paper texture leaks through */
+html[data-theme="modern"] body {
+    background-image: none;
+}
+
 /* Section header band (used on most pages) */
 .section-header {
     background: hsl(var(--section));
@@ -146,6 +157,21 @@ html[data-theme="paper"] body {
     font-family: var(--font-display);
     font-weight: 600;
     letter-spacing: 0.01em;
+}
+
+/* Modern: flat section header — no orange band, just a typographic
+   heading on a thin-bordered card. */
+html[data-theme="modern"] .section-header {
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid hsl(var(--border));
+    border-radius: 0;
+    padding: 0.5rem 0 0.75rem 0;
+    color: hsl(var(--fg));
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
 }
 
 /* Shift / state pill colours (used in tables and rota cells) */
@@ -182,10 +208,40 @@ html[data-theme="paper"] body {
     border-bottom: 1px solid hsl(var(--border));
 }
 
+/* Modern: clean rows, slate borders, hover highlight */
+html[data-theme="modern"] .paper-table {
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--bg-elev));
+}
+html[data-theme="modern"] .paper-table th {
+    background: hsl(210 40% 96%);
+    color: hsl(var(--fg-muted));
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid hsl(var(--border));
+}
+html[data-theme="modern"] .paper-table tbody tr:hover {
+    background: hsl(210 40% 98%);
+}
+
 /* Sidebar nav */
 .app-sidebar {
     background: hsl(var(--bg-elev));
     border-right: 1px solid hsl(var(--border));
+}
+
+/* Modern: dark slate-900 sidebar with light text */
+html[data-theme="modern"] .app-sidebar {
+    background: hsl(var(--bg-sidebar));
+    border-right: 1px solid hsl(222 47% 18%);
+    color: hsl(var(--bg-sidebar-fg));
+}
+html[data-theme="modern"] .app-sidebar .text-muted-foreground {
+    color: hsl(215 20% 65%);
+}
+html[data-theme="modern"] .app-sidebar .display {
+    color: hsl(var(--bg-sidebar-fg));
 }
 
 .nav-link {
@@ -206,6 +262,20 @@ html[data-theme="paper"] body {
     background: hsl(var(--section));
     color: hsl(var(--section-fg));
     box-shadow: 0 4px 16px -6px hsl(var(--section) / .6);
+}
+
+/* Modern: nav links on dark sidebar */
+html[data-theme="modern"] .app-sidebar .nav-link {
+    color: hsl(215 20% 75%);
+}
+html[data-theme="modern"] .app-sidebar .nav-link:hover {
+    background: hsl(222 47% 18%);
+    color: hsl(var(--bg-sidebar-fg));
+}
+html[data-theme="modern"] .app-sidebar .nav-link.active {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-fg));
+    box-shadow: 0 6px 20px -8px hsl(var(--primary) / .5);
 }
 
 /* Buttons (override shadcn primary look slightly per theme) */
@@ -235,6 +305,14 @@ html[data-theme="paper"] body {
     background:
         radial-gradient(circle at 30% 20%, hsl(var(--section) / .35), transparent 60%),
         radial-gradient(circle at 80% 80%, hsl(var(--accent-pink) / .15), transparent 60%),
+        hsl(var(--bg));
+}
+
+/* Modern login: cool slate gradient with teal hint */
+html[data-theme="modern"] .login-hero {
+    background:
+        radial-gradient(circle at 25% 15%, hsl(var(--primary) / .12), transparent 55%),
+        radial-gradient(circle at 80% 90%, hsl(222 47% 11% / .06), transparent 60%),
         hsl(var(--bg));
 }
 
