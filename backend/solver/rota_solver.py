@@ -74,6 +74,7 @@ DEFAULT_WEIGHTS = {
     "senior_weekend_cover": 5_000,       # only used if rule is "soft"
     "senior_weekend_rotation_nudge": 30, # reward for assigned senior being on D/D* their weekend
     "avoid_pair_seniors": 40,            # penalty per day L.M. + L.D. both on day cover
+    "min_sleepover_per_week_for_seniors": 30,  # penalty per week per listed staff with < min D*
 }
 
 DEFAULT_RULE_MODES = {
@@ -88,9 +89,10 @@ DEFAULT_RULE_MODES = {
     "weekend_fairness": "soft",
     "overtime_prefer_flexi": "soft",
     "prefer_dstar_over_star": "soft",
-    "non_flexi_overage": "hard",
+    "non_flexi_overage": "soft",
     "senior_weekend_cover": "hard",
     "avoid_pair_seniors": "soft",
+    "min_sleepover_per_week_for_seniors": "soft",
 }
 
 SENIOR_STAFF = ("L.M.", "L.D.")
@@ -571,6 +573,49 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                 model.Add(both == 0)
             else:  # soft
                 soft_terms.append(weights["avoid_pair_seniors"] * both)
+
+    # -----------------------------------------------------------------
+    # min_sleepover_per_week_for_seniors: each listed staff should have
+    # >= N D* shifts per week. Soft by default. Skips weeks where the
+    # staff is fully on AL/TRN (≥5 days), since no D* is physically
+    # possible in that case.
+    # -----------------------------------------------------------------
+    msl_mode = modes.get("min_sleepover_per_week_for_seniors", "soft")
+    if msl_mode != "off":
+        msl_params = rule_params.get("min_sleepover_per_week_for_seniors") or {}
+        msl_staff = [s for s in (msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
+                     if s in staff_by]
+        msl_min = max(0, int(msl_params.get("min_sleepovers_per_week", 1)))
+        if msl_min > 0 and msl_staff:
+            for s in msl_staff:
+                for w in range(weeks):
+                    week_idx = range(w * 7, (w + 1) * 7)
+                    dstar_w = sum(x[s][di]["D*"] for di in week_idx)
+                    # Count AL+TRN to skip weeks where the staff is unavailable.
+                    unavail_w = sum(x[s][di]["AL"] + x[s][di]["TRN"] for di in week_idx)
+                    if msl_mode == "hard":
+                        # hard: dstar_w + (unavail_w >= 5 ? large : 0) >= msl_min.
+                        # Use an indicator for "mostly unavailable".
+                        mostly_off = model.NewBoolVar(f"msl_off_{s}_w{w}")
+                        model.Add(unavail_w >= 5).OnlyEnforceIf(mostly_off)
+                        model.Add(unavail_w <= 4).OnlyEnforceIf(mostly_off.Not())
+                        # When NOT mostly_off, require dstar_w >= msl_min
+                        model.Add(dstar_w >= msl_min).OnlyEnforceIf(mostly_off.Not())
+                    else:  # soft
+                        # penalty = 1 if dstar_w < msl_min AND unavail_w < 5
+                        short = model.NewBoolVar(f"msl_short_{s}_w{w}")
+                        available = model.NewBoolVar(f"msl_avail_{s}_w{w}")
+                        # available = (unavail_w <= 4)
+                        model.Add(unavail_w <= 4).OnlyEnforceIf(available)
+                        model.Add(unavail_w >= 5).OnlyEnforceIf(available.Not())
+                        # not_enough = (dstar_w < msl_min)
+                        not_enough = model.NewBoolVar(f"msl_ne_{s}_w{w}")
+                        model.Add(dstar_w <= msl_min - 1).OnlyEnforceIf(not_enough)
+                        model.Add(dstar_w >= msl_min).OnlyEnforceIf(not_enough.Not())
+                        # short = available AND not_enough
+                        model.AddBoolAnd([available, not_enough]).OnlyEnforceIf(short)
+                        model.AddBoolOr([available.Not(), not_enough.Not()]).OnlyEnforceIf(short.Not())
+                        soft_terms.append(weights["min_sleepover_per_week_for_seniors"] * short)
 
     if soft_terms:
         model.Minimize(sum(soft_terms))

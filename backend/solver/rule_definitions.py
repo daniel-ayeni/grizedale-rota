@@ -169,8 +169,8 @@ RULES: list[dict] = [
     {
         "id": "non_flexi_overage",
         "name": "Non-flexi staff stay near contracted hours",
-        "description": "Hard cap (mode=hard) on non-flexi staff hours at contracted weekly + 8h per week. Switch to soft to allow overage with weighted penalty. Flexi staff (see overtime preference rule) are exempt.",
-        "severity_default": "hard",
+        "description": "Penalty for assigning non-flexi staff above their contracted weekly hours + 8h/week. Soft by default — switch to hard to enforce strictly (may become infeasible when a Flexi has multi-day AL). Flexi staff (see overtime preference rule) are exempt.",
+        "severity_default": "soft",
         "immovable": False,
         "weight_default": 50,
     },
@@ -189,6 +189,18 @@ RULES: list[dict] = [
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 40,
+    },
+    {
+        "id": "min_sleepover_per_week_for_seniors",
+        "name": "Senior / day staff minimum sleepovers per week",
+        "description": "Each listed staff should work at least N D* shifts every week. Soft by default — rotation usually satisfies this naturally. Manager can override by removing the staff from the list or lowering N.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 30,
+        "params_default": {
+            "staff_initials": ["L.M.", "L.D.", "T.D."],
+            "min_sleepovers_per_week": 1,
+        },
     },
 ]
 

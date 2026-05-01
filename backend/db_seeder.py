@@ -114,7 +114,7 @@ async def seed_if_empty(db) -> dict:
     if rules_doc:
         rules = rules_doc.get("rules") or {}
         from solver.rule_definitions import RULES_BY_ID
-        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors"):
+        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors", "min_sleepover_per_week_for_seniors"):
             if rule_id in rules:
                 continue
             r_def = RULES_BY_ID[rule_id]
@@ -136,7 +136,9 @@ async def seed_if_empty(db) -> dict:
         # current values (only updates if still at old default).
         stale_bumps = [
             ("prefer_dstar_over_star", "weight", 25, 200),
-            ("non_flexi_overage", "mode", "soft", "hard"),
+            # Previously non_flexi_overage was hard; that caused infeasibility
+            # when a Flexi had multi-day AL. Spec is soft (+8h preference).
+            ("non_flexi_overage", "mode", "hard", "soft"),
         ]
         for rid, field, old_val, new_val in stale_bumps:
             res = await db.rules_config.update_one(

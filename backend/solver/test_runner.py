@@ -527,6 +527,39 @@ def main() -> int:
     )
     print("[OK] flexi redistribution: T.D. absorbs D.A.'s AL-week slack")
 
+    # =====================================================================
+    # NEW RULE: min_sleepover_per_week_for_seniors
+    # L.M., L.D., T.D. should each have >= 1 D* in every week (unless they
+    # are on AL/TRN ≥5 days that week).
+    # =====================================================================
+    print("\n=== NEW RULE: min_sleepover_per_week_for_seniors ===")
+    seniors_for_dstar = ["L.M.", "L.D.", "T.D."]
+    cell_main = {(d["date"], a["staff_initials"]): a["shift"]
+                 for d in result["rota"] for a in d["assignments"]}
+    misses = []
+    for s in seniors_for_dstar:
+        for w in range(payload.get("weeks", 4)):
+            week_dates = [
+                (_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+                for i in range(7)
+            ]
+            unavail = sum(1 for d in week_dates if cell_main.get((d, s)) in {"AL", "TRN"})
+            if unavail >= 5:
+                continue  # mostly off — rule skips
+            dstars = sum(1 for d in week_dates if cell_main.get((d, s)) == "D*")
+            if dstars < 1:
+                misses.append((s, w + 1, dstars))
+    print(f"  per-staff per-week D* counts (default seed): {len(misses)} missing-week(s)")
+    for m in misses:
+        print(f"    miss: {m[0]} week {m[1]} = {m[2]} D*")
+    # Soft rule (weight 30) — solver should naturally produce 0 misses
+    # in the default seed since rotation already requires sleepovers.
+    assert len(misses) == 0, (
+        f"min_sleepover_per_week_for_seniors soft rule should be satisfied "
+        f"in default seed, got misses: {misses}"
+    )
+    print("[OK] every senior staff has >=1 D* every week (default seed)")
+
     return 0
 
 

@@ -21,6 +21,7 @@ const RULE_DEFS = [
     { key: "no_sleepover_before_leave", name: "No sleepover before AL / training", desc: "A D* or * sleeps until ~08:00 the next day, so staff cannot start annual leave or training straight after a sleepover.", immovable: true },
     { key: "senior_weekend_cover", name: "Senior on every weekend", desc: "Each Saturday and Sunday must have at least one of L.M. (Deputy) or L.D. (Senior Care Support) on a D or D*. Rotation preference set in /settings.", immovable: true },
     { key: "avoid_pair_seniors", name: "Avoid pairing L.M. and L.D. on the same shift", desc: "Manager prefers to split L.M. and L.D. so each pairs with other staff. Penalty when both are on day cover the same date." },
+    { key: "min_sleepover_per_week_for_seniors", name: "Senior / day staff minimum sleepovers per week", desc: "Listed staff should work ≥ N D* shifts each week (unless on AL/TRN that week). Manager can remove staff from the list or toggle to Hard for strict enforcement.", hasParams: true },
     { key: "med_competent_required", name: "Medication-competent on every shift", desc: "Every day shift and every night shift includes ≥1 medication-competent staff." },
     { key: "first_aider_required",   name: "First-aider on every shift",          desc: "Every day shift and every night shift includes ≥1 first-aider." },
     { key: "no_male_pair_alone",     name: "Male staff cannot be alone together", desc: "If any male staff is on a shift, at least one female must be on the same shift." },
@@ -173,15 +174,28 @@ export default function Rules() {
                                         onValueChange={(v) => setWeight(rd.key, v[0])}
                                         data-testid={`rule-${rd.key}-weight-slider`}
                                     />
-                                    {rd.hasParams && rd.key === "overtime_prefer_flexi" && (
+                                </div>
+                            )}
+
+                            {/* Params editor — visible whenever the rule is active (Soft or Hard) and has params */}
+                            {rd.hasParams && r.mode !== "off" && !immovable && (
+                                <div className="mt-4 pt-4 border-t" style={{ borderColor: "hsl(var(--border))" }}>
+                                    {rd.key === "overtime_prefer_flexi" && (
                                         <OvertimeParams
                                             params={r.params || {}}
                                             staff={staff}
                                             setParam={(k, v) => setParam(rd.key, k, v)}
                                         />
                                     )}
-                                    {rd.hasParams && rd.key !== "overtime_prefer_flexi" && (
-                                        <div className="mt-4 grid grid-cols-2 gap-3" data-testid={`rule-${rd.key}-params`}>
+                                    {rd.key === "min_sleepover_per_week_for_seniors" && (
+                                        <MinSleepoverParams
+                                            params={r.params || {}}
+                                            staff={staff}
+                                            setParam={(k, v) => setParam(rd.key, k, v)}
+                                        />
+                                    )}
+                                    {rd.key !== "overtime_prefer_flexi" && rd.key !== "min_sleepover_per_week_for_seniors" && (
+                                        <div className="grid grid-cols-2 gap-3" data-testid={`rule-${rd.key}-params`}>
                                             <div>
                                                 <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">Preferred staff initials</label>
                                                 <input
@@ -329,3 +343,74 @@ function OvertimeParams({ params, staff, setParam }) {
         </div>
     );
 }
+
+/**
+ * MinSleepoverParams — editor for `min_sleepover_per_week_for_seniors`.
+ * - Multi-select checkbox grid of active staff (default L.M./L.D./T.D.).
+ * - Number input for the minimum D* per week (default 1).
+ */
+function MinSleepoverParams({ params, staff, setParam }) {
+    const selected = Array.isArray(params.staff_initials)
+        ? params.staff_initials
+        : ["L.M.", "L.D.", "T.D."];
+    const minPerWeek = params.min_sleepovers_per_week ?? 1;
+
+    const activeStaff = staff.filter((s) => s.active !== false);
+
+    const toggleStaff = (initials, checked) => {
+        const next = new Set(selected);
+        if (checked) next.add(initials); else next.delete(initials);
+        setParam("staff_initials", Array.from(next));
+    };
+
+    return (
+        <div className="space-y-4" data-testid="rule-min_sleepover_per_week_for_seniors-params">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
+                        Minimum D* per week
+                    </label>
+                    <input
+                        type="number"
+                        min={0}
+                        max={7}
+                        className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                        style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                        value={minPerWeek}
+                        onChange={(e) => setParam("min_sleepovers_per_week", Math.max(0, Number(e.target.value) || 0))}
+                        data-testid="rule-min_sleepover_per_week_for_seniors-param-min"
+                    />
+                </div>
+            </div>
+
+            <div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">
+                    Staff required to meet this minimum
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {activeStaff.map((s) => (
+                        <label
+                            key={s.initials}
+                            className="flex items-center gap-2 text-sm px-2 py-1.5 rounded cursor-pointer"
+                            style={{ background: "hsl(var(--bg-elev))" }}
+                            data-testid={`min-sleepover-staff-${s.initials}`}
+                        >
+                            <Checkbox
+                                checked={selected.includes(s.initials)}
+                                onCheckedChange={(c) => toggleStaff(s.initials, !!c)}
+                            />
+                            <span className="font-mono text-xs">{s.initials}</span>
+                            <span className="text-muted-foreground text-xs truncate">{s.role || "—"}</span>
+                        </label>
+                    ))}
+                </div>
+                {selected.length === 0 && (
+                    <div className="text-xs text-muted-foreground mt-2" data-testid="min-sleepover-empty-warning">
+                        No staff selected — rule has no effect.
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+

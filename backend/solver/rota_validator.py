@@ -332,6 +332,35 @@ def validate_rota(
                         {"date": d_str, "staff_initials": b},
                     ]))
 
+    # --- min_sleepover_per_week_for_seniors ----------------------------
+    # For each listed staff and each week, check D* count >= min.
+    # Skips weeks where the staff has >= 5 AL/TRN days (unavailable).
+    msl_mode = _mode_for(rules_config, "min_sleepover_per_week_for_seniors", "soft")
+    if msl_mode != "off":
+        msl_entry = (rules_config or {}).get("min_sleepover_per_week_for_seniors") or {}
+        msl_params = msl_entry.get("params") if isinstance(msl_entry, dict) else {}
+        msl_params = msl_params or {}
+        msl_staff = [s for s in (msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
+                     if s in staff_by]
+        msl_min = max(0, int(msl_params.get("min_sleepovers_per_week", 1)))
+        if msl_min > 0 and msl_staff:
+            for s in msl_staff:
+                for w in range(weeks):
+                    week_strs = day_strs[w * 7:(w + 1) * 7]
+                    dstar_w = sum(1 for d in week_strs if cell[(d, s)]["shift"] == "D*")
+                    unavail_w = sum(
+                        1 for d in week_strs
+                        if cell[(d, s)]["shift"] in {"AL", "TRN"}
+                    )
+                    if unavail_w >= 5:
+                        continue  # unavailable that week — skip
+                    if dstar_w < msl_min:
+                        violations.append(_v("min_sleepover_per_week_for_seniors", msl_mode,
+                            f"{s}: only {dstar_w} D* in week {w + 1} (need ≥{msl_min})",
+                            staff_initials=s, date_=week_strs[0],
+                            affected_cells=[{"date": d, "staff_initials": s}
+                                            for d in week_strs]))
+
     return violations
 
 
