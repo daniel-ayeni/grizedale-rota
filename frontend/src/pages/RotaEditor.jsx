@@ -107,6 +107,20 @@ export default function RotaEditor() {
 
     // Drag-select handlers passed down to cells. Pointer events allow
     // both mouse & touch.
+    const cellToggleSelect = useCallback((dateStr, init) => {
+        // Toggle a cell in/out of the active selection. Used while a multi-
+        // select is active (typically started by a week-lock chip): a single
+        // click on a selected cell removes it, on an unselected cell adds it.
+        // This lets the manager curate the selection cell-by-cell before
+        // applying Lock / Unlock / Clear.
+        const k = `${dateStr}|${init}`;
+        setSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(k)) next.delete(k); else next.add(k);
+            return next;
+        });
+    }, []);
+
     const onCellPointerDown = useCallback((dateStr, init, ev) => {
         // Plain click on a non-additive (no shift/ctrl) lets the existing
         // shift-cycle handler run; we only start drag-select on shift-drag
@@ -611,6 +625,7 @@ export default function RotaEditor() {
                                 selected={selected}
                                 onPointerDown={onCellPointerDown}
                                 onPointerEnter={onCellPointerEnter}
+                                onToggleSelect={cellToggleSelect}
                             />
                         ))}
                     </div>
@@ -784,7 +799,7 @@ export default function RotaEditor() {
     );
 }
 
-function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetOnCall, violationCellsRef, busyKey, selected, onPointerDown, onPointerEnter }) {
+function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetOnCall, violationCellsRef, busyKey, selected, onPointerDown, onPointerEnter, onToggleSelect }) {
     return (
         <>
             <div className="rota-identity-cell" data-testid={`row-label-${s.initials}`}>
@@ -825,6 +840,7 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
                         busy={busy}
                         onPointerDown={onPointerDown}
                         onPointerEnter={onPointerEnter}
+                        onToggleSelect={onToggleSelect}
                         isSelected={isSelected}
                         anySelected={selected && selected.size > 0}
                     />
@@ -834,7 +850,7 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
     );
 }
 
-function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy, onPointerDown, onPointerEnter, isSelected, anySelected }) {
+function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy, onPointerDown, onPointerEnter, onToggleSelect, isSelected, anySelected }) {
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState({ shift, locked, reason: "" });
     useEffect(() => { setDraft({ shift, locked, reason: "" }); }, [shift, locked, dateStr, init]);
@@ -845,25 +861,31 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
     };
 
     const handleClick = (e) => {
-        // If user is shift/ctrl/meta clicking, this is a multi-select
-        // operation — don't run the shift-cycle handler.
+        // shift/ctrl/meta-click is reserved for drag/multi-select; the
+        // pointerDown handler already captures these.
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-        // While the cell is part of an active multi-select, single-click is
-        // a no-op. Bulk actions (Lock/Unlock/Clear) drive edits in this mode.
-        if (isSelected) return;
+        // While a multi-select is active, single-click TOGGLES this cell's
+        // membership in the selection — removes if currently selected,
+        // adds if not. This lets the manager curate the week-lock selection
+        // cell-by-cell ("select W1 then deselect the 3 days I want to leave
+        // unlocked"). No shift-cycle, no popover.
+        if (anySelected) {
+            if (onToggleSelect) onToggleSelect(dateStr, init);
+            return;
+        }
         onClick();
     };
 
     const handleContextMenu = (e) => {
         e.preventDefault();
-        // Same rule: while in a multi-select, the right-click popover is
-        // disabled to keep the bulk-action toolbar the single source of truth.
-        if (isSelected) return;
+        // While in a multi-select, the right-click popover is also disabled
+        // — the bulk-action toolbar is the single edit channel.
+        if (anySelected) return;
         setOpen(true);
     };
 
     return (
-        <Popover open={isSelected ? false : open} onOpenChange={(v) => { if (!isSelected) setOpen(v); }}>
+        <Popover open={anySelected ? false : open} onOpenChange={(v) => { if (!anySelected) setOpen(v); }}>
             <PopoverTrigger asChild>
                 <button
                     type="button"
@@ -871,20 +893,22 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
                     onClick={handleClick}
                     onContextMenu={handleContextMenu}
                     onPointerDown={(e) => {
-                        // While in multi-select, suppress the trigger entirely so
-                        // Radix never opens the popover.
-                        if (isSelected) { e.preventDefault(); e.stopPropagation(); return; }
+                        // While a multi-select is active, suppress the trigger
+                        // entirely so Radix never opens the popover.
+                        if (anySelected) { e.preventDefault(); e.stopPropagation(); return; }
                         if (onPointerDown) onPointerDown(dateStr, init, e);
                     }}
                     onPointerEnter={() => onPointerEnter && onPointerEnter(dateStr, init)}
                     data-testid={`cell-${dateStr}-${init}`}
                     disabled={busy}
                     title={
-                        isSelected
-                            ? "Cell is part of a multi-select — use the toolbar below to Lock / Unlock / Clear"
+                        anySelected
+                            ? (isSelected
+                                ? "Click to remove from selection"
+                                : "Click to add to selection")
                             : (shift ? SHIFT_LABEL[shift] : "")
                     }
-                    aria-disabled={isSelected || busy}
+                    aria-pressed={anySelected ? isSelected : undefined}
                 >
                     {displayShift(shift)}
                     {onCall && <span className="oncall-chip">on-call</span>}

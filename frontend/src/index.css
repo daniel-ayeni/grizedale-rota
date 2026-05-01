@@ -321,6 +321,11 @@ html[data-theme="modern"] .shift-cell .oncall-chip {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     border-radius: 0;
+    /* Keep the horizontal scrollbar from cutting into the last staff row.
+       `scrollbar-gutter: stable` reserves the gutter on browsers that
+       support it; `padding-bottom` is the universal fallback. */
+    scrollbar-gutter: stable;
+    padding-bottom: 18px;
 }
 
 .rota-grid {
