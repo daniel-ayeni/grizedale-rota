@@ -114,7 +114,7 @@ async def seed_if_empty(db) -> dict:
     if rules_doc:
         rules = rules_doc.get("rules") or {}
         from solver.rule_definitions import RULES_BY_ID
-        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage"):
+        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave"):
             if rule_id in rules:
                 continue
             r_def = RULES_BY_ID[rule_id]

@@ -246,14 +246,24 @@ html[data-theme="modern"] .shift-cell {
 .shift-cell:hover { filter: brightness(0.97); }
 .shift-cell:active { transform: scale(0.98); }
 
+/* =========================================================
+   Paper theme — photo-accurate cell palette
+   Reference: physical rota photo from the user.
+   D  = vibrant green (new — was cream)
+   D* = saturated yellow
+   N  = white with black border (handwritten "N")
+   *  = bright yellow (Sleep In)
+   AL = pink/magenta (white text)
+   TRN= red (white text) — cell shows "T"
+   ========================================================= */
 .shift-blank   { background: hsl(0 0% 100%); color: transparent; }
-.shift-D       { background: #FFFBE8; color: hsl(0 0% 18%); }
-.shift-Dstar   { background: #FFF3B0; color: hsl(0 0% 18%); }
-.shift-N       { background: #D6E6F2; color: hsl(0 0% 18%); }
-.shift-star    { background: #FFE066; color: hsl(0 0% 18%); }
+.shift-D       { background: #3F8C4D; color: #FFFFFF; }
+.shift-Dstar   { background: #F5D04A; color: hsl(220 15% 20%); }
+.shift-N       { background: #FFFFFF; color: hsl(220 15% 18%); }
+.shift-star    { background: #FFE066; color: hsl(220 15% 20%); }
 .shift-OFF     { background: hsl(0 0% 100%); color: transparent; }
-.shift-AL      { background: #E91E63; color: white; }
-.shift-TRN     { background: #D32F2F; color: white; }
+.shift-AL      { background: #C9377C; color: #FFFFFF; }
+.shift-TRN     { background: #D33B3B; color: #FFFFFF; }
 
 html[data-theme="modern"] .shift-blank { background: hsl(var(--bg-elev)); }
 html[data-theme="modern"] .shift-D     { background: hsl(var(--bg-elev)); color: hsl(var(--fg)); }
@@ -269,7 +279,7 @@ html[data-theme="modern"] .shift-TRN   { background: hsl(0 75% 92%);   color: hs
     bottom: 0;
     left: 0;
     right: 0;
-    background: #2196F3;
+    background: #3461A8;
     color: white;
     font-family: 'Inter', sans-serif;
     font-size: 0.55rem;
@@ -409,7 +419,7 @@ html[data-theme="modern"] .rota-header-date.weekend {
     height: 0;
     border-left: 5px solid transparent;
     border-right: 5px solid transparent;
-    border-top: 7px solid hsl(280 50% 70%);
+    border-top: 7px solid #A8C5E0;
 }
 
 /* ===== Left identity cells (peach background, two-line content) ===== */
@@ -490,14 +500,14 @@ html[data-theme="modern"] .rota-identity-cell .ident-hours {
     border: 1px solid hsl(var(--fg) / .25);
     flex-shrink: 0;
 }
-.rota-legend-strip .legend-swatch.firstaider { background: hsl(var(--accent-green) / .85); }
-.rota-legend-strip .legend-swatch.al        { background: hsl(var(--accent-pink) / .55); }
-.rota-legend-strip .legend-swatch.trn       { background: hsl(var(--accent-red) / .55); }
-.rota-legend-strip .legend-swatch.oncall    { background: hsl(var(--accent-bright-blue) / .85); }
-.rota-legend-strip .legend-swatch.sleep     { background: hsl(48 100% 60%); }
-.rota-legend-strip .legend-swatch.paycut    { background: hsl(45 30% 80%); }
-.rota-legend-strip .legend-swatch.weekend   { background: hsl(var(--accent-purple) / .75); }
-.rota-legend-strip .legend-swatch.medcycle  { background: hsl(280 50% 88%); }
+.rota-legend-strip .legend-swatch.firstaider { background: #3F8C4D; }
+.rota-legend-strip .legend-swatch.al        { background: #C9377C; }
+.rota-legend-strip .legend-swatch.trn       { background: #D33B3B; }
+.rota-legend-strip .legend-swatch.oncall    { background: #3461A8; }
+.rota-legend-strip .legend-swatch.sleep     { background: #FFE066; }
+.rota-legend-strip .legend-swatch.paycut    { background: #C8CCD0; }
+.rota-legend-strip .legend-swatch.weekend   { background: #5E3F87; }
+.rota-legend-strip .legend-swatch.medcycle  { background: #A8C5E0; }
 .rota-legend-strip .legend-swatch.bus       { background: hsl(220 14% 88%); }
 .rota-legend-strip .legend-swatch.request   { background: hsl(220 14% 78%); }
 

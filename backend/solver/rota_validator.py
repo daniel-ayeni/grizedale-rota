@@ -169,6 +169,15 @@ def validate_rota(
                         {"date": day_strs[i], "staff_initials": s},
                         {"date": day_strs[i + 1], "staff_initials": s},
                     ]))
+            if today in {"D*", "*"} and tomorrow in {"AL", "TRN"}:
+                violations.append(_v("no_sleepover_before_leave", "hard",
+                    f"{s}: {today} on {day_strs[i]} would extend into {tomorrow} on "
+                    f"{day_strs[i+1]} — cannot sleepover straight into leave/training",
+                    date_=day_strs[i], staff_initials=s,
+                    affected_cells=[
+                        {"date": day_strs[i], "staff_initials": s},
+                        {"date": day_strs[i + 1], "staff_initials": s},
+                    ]))
 
     # --- capability flags (immovable) ------------------------------------
     for d_str in day_strs:

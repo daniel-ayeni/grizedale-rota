@@ -21,7 +21,7 @@ export const SHIFT_LABEL = {
     "*": "*",
     OFF: "OFF",
     AL: "AL",
-    TRN: "TRN",
+    TRN: "T",
 };
 
 export const SHIFT_HOURS = {

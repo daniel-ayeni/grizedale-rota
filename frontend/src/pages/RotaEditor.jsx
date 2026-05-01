@@ -395,8 +395,8 @@ export default function RotaEditor() {
                                             {d.getDate()}
                                             {(hol || isPayCut || (reqs && reqs.length > 0)) && (
                                                 <span className="header-marker-row">
-                                                    {hol && <span className="marker-dot" style={{ background: "hsl(var(--accent-bright-blue))" }} />}
-                                                    {isPayCut && <span className="marker-dot" style={{ background: "hsl(45 30% 35%)" }} />}
+                                                    {hol && <span className="marker-dot" style={{ background: "#A8C5E0" }} />}
+                                                    {isPayCut && <span className="marker-dot" style={{ background: "#C8CCD0" }} />}
                                                     {reqs && reqs.length > 0 && (
                                                         <Popover>
                                                             <PopoverTrigger asChild>

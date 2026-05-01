@@ -50,6 +50,14 @@ RULES: list[dict] = [
         "weight_default": 0,
     },
     {
+        "id": "no_sleepover_before_leave",
+        "name": "No sleepover before AL / training",
+        "description": "A D* or * shift extends into the morning of the next day, so staff cannot start annual leave or training straight after a sleepover.",
+        "severity_default": "hard",
+        "immovable": True,
+        "weight_default": 0,
+    },
+    {
         "id": "med_competent_required",
         "name": "Medication-competent on every shift",
         "description": "Every day shift and every night shift includes ≥1 medication-competent staff.",

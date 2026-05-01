@@ -303,6 +303,14 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
         for di in range(n_days - 1):
             model.Add(x[s][di]["N"] + x[s][di + 1]["D"] <= 1)
             model.Add(x[s][di]["D*"] + x[s][di + 1]["D*"] <= 1)
+            # no_sleepover_before_leave: D*/* today forbids AL/TRN tomorrow.
+            # A D* or * shift extends until ~08:00 next day, so the staff is
+            # still on duty when their leave/training day officially begins.
+            model.Add(
+                x[s][di]["D*"] + x[s][di]["*"]
+                + x[s][di + 1]["AL"] + x[s][di + 1]["TRN"]
+                <= 1
+            )
 
     # Contracted hours (>= target*weeks - AL*12 - TRN*8 - 2)
     # Plus: overtime preference for the flexi staff — soft NEGATIVE coefficient

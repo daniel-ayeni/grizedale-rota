@@ -327,6 +327,69 @@ def main() -> int:
     )
     print("[OK] validator regression: `*` cell is flagged when day cover breaks")
 
+    # =====================================================================
+    # Part A regression: "no sleepover before leave"
+    # A D*/* shift extends into 08:00 next day. So if a staff is on AL or
+    # TRN tomorrow they cannot sleepover tonight.
+    # =====================================================================
+    print("\n=== NEW RULE: no_sleepover_before_leave ===")
+    # 1) Solver must refuse when we lock D.A. on D* Tuesday AND AL on Wednesday.
+    sleep_before_leave_payload = json.loads(SEED_PATH.read_text())
+    sleep_before_leave_payload["locked_cells"] = [
+        {"staff_initials": "D.A.", "date": "2026-04-21", "shift": "D*"},
+    ]
+    sleep_before_leave_payload["leave"] = [
+        {"staff_initials": "D.A.", "date": "2026-04-22", "type": "AL"},
+    ]
+    solver_result = solve_rota(sleep_before_leave_payload, time_limit_s=5)
+    assert not solver_result.get("success"), (
+        "solver should return INFEASIBLE when D* on 2026-04-21 is paired with "
+        "AL on 2026-04-22, got success=True"
+    )
+    assert "INFEASIBLE" in (solver_result.get("solver_status") or ""), (
+        f"expected INFEASIBLE status, got {solver_result.get('solver_status')}"
+    )
+    print(
+        f"  solver correctly returns {solver_result.get('solver_status')} "
+        "for D* Tue + AL Wed lock"
+    )
+
+    # 2) Validator must flag the offending (today, tomorrow) pair.
+    manual_rota = {
+        "start_date": "2026-04-20",
+        "weeks": 1,
+        "assignments": [
+            # Minimal valid-ish cover on Mon so Mon itself doesn't complain,
+            # then on Tue the D* + AL Wed creates the violation.
+            {"date": "2026-04-20", "staff_initials": "L.M.", "shift": "D",   "locked": False},
+            {"date": "2026-04-20", "staff_initials": "L.D.", "shift": "D*",  "locked": False},
+            {"date": "2026-04-20", "staff_initials": "C.E.", "shift": "N",   "locked": False},
+            # The pair under test:
+            {"date": "2026-04-21", "staff_initials": "D.A.", "shift": "D*",  "locked": False},
+            {"date": "2026-04-22", "staff_initials": "D.A.", "shift": "AL",  "locked": False},
+        ],
+    }
+    v_list = validate_rota(manual_rota, payload["staff"], rules_config={})
+    sleep_leave_v = [
+        v for v in v_list
+        if v["rule_id"] == "no_sleepover_before_leave" and v["severity"] == "hard"
+    ]
+    assert sleep_leave_v, (
+        f"expected a `no_sleepover_before_leave` HARD violation, "
+        f"got rule_ids: {[v['rule_id'] for v in v_list]}"
+    )
+    affected_inits = {c["staff_initials"] for v in sleep_leave_v for c in v["affected_cells"]}
+    assert "D.A." in affected_inits, f"D.A. expected in affected_cells, got {affected_inits}"
+    affected_dates = {c["date"] for v in sleep_leave_v for c in v["affected_cells"]}
+    assert {"2026-04-21", "2026-04-22"} <= affected_dates, (
+        f"both the D* date and the AL date should be in affected_cells, got {affected_dates}"
+    )
+    print(
+        f"  validator flags D.A. D* 2026-04-21 → AL 2026-04-22 "
+        f"(affected dates: {sorted(affected_dates)}) [OK]"
+    )
+    print("[OK] no_sleepover_before_leave rule verified (solver + validator)")
+
     return 0
 
 
