@@ -604,12 +604,21 @@ async def patch_cell(rota_id: str, patch: CellPatch, current=Depends(auth_requir
             found = a
             break
 
-    # Locked check
-    if found and found.get("locked") and patch.locked is not False:
-        # Locked cells can only be changed if explicitly unlocking
-        # in the same patch (locked=False) OR if shift is unchanged.
-        if patch.shift != found["shift"] and patch.locked is None:
-            raise HTTPException(status_code=409, detail="Cell is locked. Unlock first or pass locked=false in the patch.")
+    # Locked check — refuse any shift change while the cell remains locked.
+    # The only way to edit a locked cell is to also unlock it (locked=False)
+    # in the same patch. Without this, the frontend popover could change
+    # the shift on a locked cell silently because patch.locked stayed true.
+    if found and found.get("locked"):
+        new_locked = patch.locked if patch.locked is not None else found.get("locked", False)
+        if patch.shift != found.get("shift") and new_locked:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cell is locked ({patch.staff_initials} on {patch.date}). "
+                    "Unlock it first or pass locked=false in the same patch to "
+                    "change the shift."
+                ),
+            )
 
     new_cell = {
         "date": patch.date,

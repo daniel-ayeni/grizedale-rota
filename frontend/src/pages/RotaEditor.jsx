@@ -1071,9 +1071,22 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
             </PopoverTrigger>
             <PopoverContent className="w-72" align="center" data-testid={`cell-popover-${dateStr}-${init}`}>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">{init} · {dateStr}</div>
+                {/* Locked-cell hint — when the cell is locked AND the popover
+                    state still has it locked, the shift radio group is
+                    disabled. The user must toggle Unlock OFF before they
+                    can change the shift. */}
+                {draft.locked && (
+                    <div className="text-xs px-2 py-2 rounded mb-2 flex items-start gap-1.5"
+                         style={{ background: "hsl(var(--accent-amber) / 0.12)", color: "hsl(var(--accent-amber-fg, var(--fg)))" }}
+                         data-testid="cell-popover-locked-hint">
+                        <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                        <span>Cell is <b>locked</b>. Toggle <i>Lock cell</i> off below to change the shift.</span>
+                    </div>
+                )}
                 {/* Grouped shift picker — Working / Off / Leave so AL/TRN
                     are visually demoted to the bottom group and never
-                    surface as the "default" choice. */}
+                    surface as the "default" choice. Disabled while
+                    draft.locked is true. */}
                 {Object.entries(SHIFT_GROUPS).map(([group, options]) => (
                     <div key={group} className={`shift-popover-group ${group.toLowerCase()}`}>
                         <div className="shift-popover-group-label">{group}</div>
@@ -1085,6 +1098,7 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
                                     size="sm"
                                     className={draft.shift === sh ? "btn-primary" : ""}
                                     onClick={() => setDraft((d) => ({ ...d, shift: sh }))}
+                                    disabled={draft.locked}
                                     data-testid={`cell-popover-shift-${(sh || "blank").replace("*", "star")}`}
                                 >
                                     {SHIFT_LABEL[sh] || "—"}
