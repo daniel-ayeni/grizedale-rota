@@ -789,6 +789,42 @@ async def list_leave(
 
 @api.post("/leave")
 async def create_leave(payload: LeaveBulkIn, current=Depends(auth_required)):
+    # max_one_per_role_on_al guard — when creating AL, refuse if another
+    # staff sharing the same role is already on AL the same date.
+    if payload.type == "AL":
+        rules_doc = await db.rules_config.find_one({}, {"_id": 0}) or {}
+        rule_mode = ((rules_doc.get("rules") or {}).get("max_one_per_role_on_al") or {}).get("mode", "hard")
+        if rule_mode == "hard":
+            me = await db.staff.find_one(
+                {"initials": payload.staff_initials},
+                {"_id": 0, "role": 1},
+            )
+            my_role = (me or {}).get("role")
+            if my_role:
+                same_role = await db.staff.find(
+                    {"role": my_role, "initials": {"$ne": payload.staff_initials}, "active": True},
+                    {"_id": 0, "initials": 1},
+                ).to_list(100)
+                role_mates = [s["initials"] for s in same_role]
+                if role_mates:
+                    for d in payload.dates:
+                        conflict = await db.leave.find_one(
+                            {
+                                "staff_initials": {"$in": role_mates},
+                                "date": d,
+                                "type": "AL",
+                            },
+                            {"_id": 0, "staff_initials": 1, "date": 1},
+                        )
+                        if conflict:
+                            raise HTTPException(
+                                status_code=422,
+                                detail=(
+                                    f"Cannot add AL — {conflict['staff_initials']} ({my_role}) "
+                                    f"is already on AL on {d}. Only one per role per day."
+                                ),
+                            )
+
     created: list[dict] = []
     for d in payload.dates:
         doc = {

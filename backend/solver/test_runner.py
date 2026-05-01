@@ -560,6 +560,99 @@ def main() -> int:
     )
     print("[OK] every senior staff has >=1 D* every week (default seed)")
 
+    # =====================================================================
+    # Item 7 regression: T.D. AL must NOT make D.A. AL
+    # The solver must never voluntarily assign AL — only honour input leave.
+    # Repro: insert AL for T.D. on 3 dates, generate, assert D.A. has NO AL
+    # on those dates (or anywhere) and her week's hours are >= baseline.
+    # =====================================================================
+    print("\n=== BUG REGRESSION: T.D. AL must not auto-AL D.A. ===")
+    td_al_payload = json.loads(SEED_PATH.read_text())
+    td_al_dates = ["2026-04-22", "2026-04-29", "2026-05-06"]  # 3 Wednesdays
+    td_al_payload["leave"] = [
+        {"staff_initials": "T.D.", "date": d, "type": "AL"} for d in td_al_dates
+    ]
+    td_al_result = solve_rota(td_al_payload, time_limit_s=10)
+    assert td_al_result["success"], (
+        f"solver must succeed when only T.D. has AL, got: {td_al_result.get('reason')}"
+    )
+    td_cell = {(d["date"], a["staff_initials"]): a["shift"]
+               for d in td_al_result["rota"] for a in d["assignments"]}
+    # ASSERTION 1: D.A. is NEVER on AL anywhere in the resulting rota
+    da_al_dates = [d for d, init in td_cell.keys() if init == "D.A." and td_cell[(d, init)] == "AL"]
+    assert da_al_dates == [], (
+        f"BUG: D.A. ended up on AL on {da_al_dates} — solver must only honour input leave"
+    )
+    # ASSERTION 2: T.D. is on AL on EXACTLY the 3 input dates (no fan-out, no shrinkage)
+    td_al_actual = sorted([d for d, init in td_cell.keys() if init == "T.D." and td_cell[(d, init)] == "AL"])
+    assert td_al_actual == sorted(td_al_dates), (
+        f"T.D. AL dates mismatch: expected {sorted(td_al_dates)} got {td_al_actual}"
+    )
+    # ASSERTION 3: D.A. on those dates is a working shift or OFF (never AL)
+    for d in td_al_dates:
+        sh = td_cell[(d, "D.A.")]
+        assert sh in {"D", "D*", "N", "*", "OFF"}, (
+            f"D.A. on {d} should be working/OFF, got {sh}"
+        )
+    # ASSERTION 4: D.A.'s hours in the week containing each AL date >= baseline.
+    # Compute D.A. hours per week. Baseline = average week without T.D. AL.
+    baseline_da = 0
+    for w in range(4):
+        wd = [(_parse_date("2026-04-20") + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        baseline_da += sum(DEFAULT_SHIFT_HOURS[cell_main.get((d, "D.A."), "OFF")] for d in wd)
+    baseline_da_per_week = baseline_da / 4
+    da_per_week = []
+    for w in range(4):
+        wd = [(_parse_date("2026-04-20") + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        da_per_week.append(
+            sum(DEFAULT_SHIFT_HOURS[td_cell.get((d, "D.A."), "OFF")] for d in wd)
+        )
+    print(f"  D.A. hours/week (T.D. AL scenario): {da_per_week} (avg {sum(da_per_week)/4:.1f}h)")
+    print(f"  D.A. hours/week (clean baseline avg): {baseline_da_per_week:.1f}h")
+    # In any week with T.D.-AL, D.A. should be >= baseline (slack opens up).
+    affected_weeks = set()
+    for d in td_al_dates:
+        delta = (_parse_date(d) - _parse_date("2026-04-20")).days
+        affected_weeks.add(delta // 7)
+    for w in affected_weeks:
+        assert da_per_week[w] >= baseline_da_per_week - 2, (
+            f"D.A. week {w + 1} hours ({da_per_week[w]}h) below baseline "
+            f"({baseline_da_per_week:.1f}h) — slack should flow to D.A. when T.D. is on AL"
+        )
+    print("[OK] item-7 regression: T.D. AL leaves D.A. unchanged-or-busier; D.A. never auto-AL'd")
+
+    # =====================================================================
+    # Item 6 regression: max_one_per_role_on_al
+    # Validator must flag when 2 staff in same role (e.g. D.A. & T.D., both
+    # Flexi) are on AL the same date.
+    # =====================================================================
+    print("\n=== NEW RULE: max_one_per_role_on_al ===")
+    rota_double_al = {
+        "start_date": "2026-04-20",
+        "weeks": 1,
+        "assignments": [
+            {"date": "2026-04-22", "staff_initials": "D.A.", "shift": "AL", "locked": False},
+            {"date": "2026-04-22", "staff_initials": "T.D.", "shift": "AL", "locked": False},
+            {"date": "2026-04-22", "staff_initials": "L.M.", "shift": "D",   "locked": False},
+            {"date": "2026-04-22", "staff_initials": "L.D.", "shift": "D*",  "locked": False},
+            {"date": "2026-04-22", "staff_initials": "C.E.", "shift": "N",   "locked": False},
+        ],
+    }
+    v_dbl = validate_rota(rota_double_al, payload["staff"], rules_config={})
+    role_v = [v for v in v_dbl if v["rule_id"] == "max_one_per_role_on_al" and v["severity"] == "hard"]
+    assert role_v, (
+        f"validator did not catch double-Flexi-AL on 2026-04-22, "
+        f"got rule_ids: {[v['rule_id'] for v in v_dbl]}"
+    )
+    affected = sorted({c["staff_initials"] for v in role_v for c in v["affected_cells"]})
+    assert affected == ["D.A.", "T.D."], (
+        f"affected_cells mismatch: expected ['D.A.', 'T.D.'], got {affected}"
+    )
+    print(f"  validator caught: {role_v[0]['message']}")
+    print("[OK] max_one_per_role_on_al validator check verified")
+
     return 0
 
 

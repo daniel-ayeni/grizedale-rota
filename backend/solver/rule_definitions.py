@@ -202,6 +202,14 @@ RULES: list[dict] = [
             "min_sleepovers_per_week": 1,
         },
     },
+    {
+        "id": "max_one_per_role_on_al",
+        "name": "Max 1 staff per role on AL same date",
+        "description": "Two staff sharing the same role (e.g. two Flexi or two Night Support) cannot be on annual leave on the same date. Single-occupant roles (Manager, Deputy) are unaffected. Enforced at the leave-creation endpoint with HTTP 422 and rechecked by the validator on every rota.",
+        "severity_default": "hard",
+        "immovable": True,
+        "weight_default": 0,
+    },
 ]
 
 RULES_BY_ID = {r["id"]: r for r in RULES}

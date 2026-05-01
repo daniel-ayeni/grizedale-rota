@@ -48,8 +48,9 @@ Build a rota builder web app for Grizedale (UK care home). Tech: FastAPI + React
     - **`non_flexi_overage` default flipped to soft (weight 50)**: previously `hard` caused infeasibility when one Flexi had multi-day AL. DB migration auto-flips existing settings.
     - **Flexi overtime reward — PER WEEK**: over_rewardable / over_above_cap split computed each week, so when one flexi has AL that week the OTHER flexi gets loaded up THAT week instead of the slack being spread across 4 weeks.
     - **Flexi bug fix verified end-to-end via HTTP**: with D.A. on AL all week 2, T.D. jumps from 42h baseline to 50h in week 2 (and C.E. bumps to 52h), absorbing D.A.'s slack — solver_status OPTIMAL, 0 hard violations.
-    - **Settings UI** — new "Weekend Senior Rotation" section with 4 dropdowns (week 1-4, pick L.M. or L.D.).
-    - **Rules UI** — both `senior_weekend_cover` (immovable) and `avoid_pair_seniors` listed; `min_sleepover_per_week_for_seniors` has new `MinSleepoverParams` editor (multi-select staff Checkbox grid + min-per-week number input). Params now visible in BOTH Soft and Hard mode (was previously soft-only, hiding the staff list when manager toggled to hard).
+    - **2026-05-01 — Items 6 + 7: max-1-per-role on AL + verified flexi-AL bug doesn't reproduce**:
+      - **`max_one_per_role_on_al` (hard, immovable)** — new rule. Two staff sharing a role (e.g. both Flexi or both Night Support) cannot be on AL the same date. Enforced at THREE layers: (1) **POST /api/leave** rejects with HTTP 422 + friendly message naming the conflicting staff and role; (2) **validator** flags any rota state with this conflict (red border + drawer entry); (3) **Rules.jsx** lists rule with IMMOVABLE badge.
+      - **Item 7 user bug "T.D. AL → D.A. also AL"** — investigated via curl + UI screenshot. **Backend is correct**: POST /api/leave inserts only T.D., GET /api/leave returns only T.D., solver leaves D.A. as OFF on that date (D.A.'s AL var is hard-constrained to 0 unless forced by input). Bug not reproducible. Likely a stale state from older session before flexi refactor. Regression test added to `test_runner.py`: insert T.D. AL on 3 dates, generate, assert D.A. has 0 AL days and her hours ≥ baseline (slack flows to her).
 
 ## Open items / not yet implemented
 - "Generate Rota" button in Dashboard still disabled (Phase 3 will wire it up + what-if mode).

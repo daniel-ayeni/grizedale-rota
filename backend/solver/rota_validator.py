@@ -332,6 +332,32 @@ def validate_rota(
                         {"date": d_str, "staff_initials": b},
                     ]))
 
+    # --- max_one_per_role_on_al ----------------------------------------
+    # Two staff sharing the same role (e.g. two Flexi) cannot be on AL on
+    # the same date. Single-occupant roles trivially satisfy.
+    mode_mra = _mode_for(rules_config, "max_one_per_role_on_al", "hard")
+    if mode_mra != "off":
+        # Group staff by role
+        role_staff: dict[str, list[str]] = {}
+        for s in staff:
+            role = s.get("role")
+            if not role:
+                continue
+            role_staff.setdefault(role, []).append(s["initials"])
+        # For each date and each role with >1 occupant, count AL
+        for d_str in day_strs:
+            for role, inits in role_staff.items():
+                if len(inits) < 2:
+                    continue
+                on_al = [i for i in inits if cell[(d_str, i)]["shift"] == "AL"]
+                if len(on_al) > 1:
+                    violations.append(_v("max_one_per_role_on_al", mode_mra,
+                        f"{', '.join(on_al)} ({role}) all on AL on {d_str} "
+                        "— max 1 per role per day",
+                        date_=d_str,
+                        affected_cells=[{"date": d_str, "staff_initials": i}
+                                        for i in on_al]))
+
     # --- min_sleepover_per_week_for_seniors ----------------------------
     # For each listed staff and each week, check D* count >= min.
     # Skips weeks where the staff has >= 5 AL/TRN days (unavailable).
