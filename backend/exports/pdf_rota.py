@@ -20,11 +20,16 @@ from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, KeepTogether,
 )
 
-# ── Paper-theme colour map (matches index.css cells exactly) ────────
+# ── Theme colour palettes ─────────────────────────────────────────
+# Paper = the original handwritten-rota look (peach headers, italic blue
+# title, Patrick Hand handwriting font). Modern = clean slate/teal
+# palette with sans-serif throughout. The shift colour map is shared
+# (per user spec: D and N green, D* mustard, * bright yellow, AL pink,
+# TRN red) but chrome / typography differ.
 SHIFT_FILL = {
     "D":   colors.HexColor("#5A8A4A"),  # solid green
     "D*":  colors.HexColor("#E8C547"),  # mustard yellow
-    "N":   colors.white,
+    "N":   colors.HexColor("#5A8A4A"),  # GREEN — matches D per user req
     "*":   colors.HexColor("#F4D03F"),  # bright yellow
     "AL":  colors.HexColor("#C2185B"),  # pink/magenta
     "TRN": colors.HexColor("#B71C1C"),  # red
@@ -32,11 +37,14 @@ SHIFT_FILL = {
     "":    colors.white,
 }
 SHIFT_TEXT = {
-    "D": colors.white, "D*": colors.HexColor("#1a1a1a"),
-    "N": colors.HexColor("#1a1a1a"),
+    "D": colors.white,
+    "D*": colors.HexColor("#1a1a1a"),
+    "N": colors.white,                    # green bg → white text
     "*": colors.HexColor("#1a1a1a"),
-    "AL": colors.white, "TRN": colors.white,
-    "OFF": colors.HexColor("#777"), "": colors.white,
+    "AL": colors.white,
+    "TRN": colors.white,
+    "OFF": colors.HexColor("#777"),
+    "": colors.white,
 }
 # Display label override. AL/TRN keep their letters; OFF and "" render
 # as a fully blank cell to match the on-screen Paper-theme behaviour.
@@ -44,11 +52,48 @@ SHIFT_LABEL = {"D": "D", "D*": "D*", "N": "N", "*": "*", "OFF": "", "": "", "AL"
 
 DOW_LETTERS = ["M", "T", "W", "T", "F", "S", "S"]
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-PEACH = colors.HexColor("#F4B68A")
-PEACH_DARK = colors.HexColor("#E89A66")
-WEEK_DIVIDER = colors.HexColor("#1a1a1a")
-TITLE_BLUE = colors.HexColor("#1a3a8c")
-GRID_LINE = colors.HexColor("#1a1a1a")
+
+# Paper palette (default, original handwritten look)
+PAPER_PEACH = colors.HexColor("#F4B68A")
+PAPER_PEACH_DARK = colors.HexColor("#E89A66")
+PAPER_TITLE = colors.HexColor("#1a3a8c")
+PAPER_GRID = colors.HexColor("#1a1a1a")
+PAPER_IDENT_BG = colors.HexColor("#F8E5D2")
+PAPER_TITLE_FONT = "Times-BoldItalic"
+
+# Modern palette — clean slate/teal, no peach
+MODERN_HEADER = colors.HexColor("#E2E8F0")     # slate-200
+MODERN_HEADER_DARK = colors.HexColor("#CBD5E1")  # slate-300
+MODERN_TITLE = colors.HexColor("#0F172A")       # slate-900
+MODERN_GRID = colors.HexColor("#94A3B8")        # slate-400
+MODERN_IDENT_BG = colors.HexColor("#F8FAFC")    # slate-50
+MODERN_TITLE_FONT = "Helvetica-Bold"
+
+
+def _theme(theme: str) -> dict:
+    if theme == "modern":
+        return {
+            "name": "modern",
+            "peach": MODERN_HEADER,
+            "peach_dark": MODERN_HEADER_DARK,
+            "title": MODERN_TITLE,
+            "grid": MODERN_GRID,
+            "ident_bg": MODERN_IDENT_BG,
+            "title_font": MODERN_TITLE_FONT,
+            "title_size": 14,
+            "body_font": "Helvetica-Bold",
+        }
+    return {
+        "name": "paper",
+        "peach": PAPER_PEACH,
+        "peach_dark": PAPER_PEACH_DARK,
+        "title": PAPER_TITLE,
+        "grid": PAPER_GRID,
+        "ident_bg": PAPER_IDENT_BG,
+        "title_font": PAPER_TITLE_FONT,
+        "title_size": 16,
+        "body_font": "Helvetica-Bold",
+    }
 
 
 def _parse(s: str) -> date:
@@ -59,13 +104,16 @@ def render_rota_pdf(
     rota: dict,
     staff: list[dict],
     home_name: str = "Grizedale",
+    theme: str = "paper",
 ) -> bytes:
-    """Render a 4-week (or N-week) rota as a single-page A3 landscape PDF.
+    """Render an N-week rota as a single A3-landscape PDF.
 
-    `rota` is the persisted rota document with fields {start_date, weeks,
-    assignments[], on_call[], status, title}. `staff` is the list of staff
-    docs currently active.
+    `theme` ∈ {"paper", "modern"} — picks the chrome palette (headers,
+    title typography, identity column tint). The shift cell colours are
+    shared across themes (D & N green, D* mustard, * bright yellow, AL
+    pink, TRN red) per user spec.
     """
+    pal = _theme(theme)
     start = _parse(rota["start_date"])
     weeks = int(rota.get("weeks", 4))
     days: list[date] = [start + timedelta(days=i) for i in range(weeks * 7)]
@@ -78,9 +126,9 @@ def render_rota_pdf(
     # ── Title row ──────────────────────────────────────────────────
     title_style = ParagraphStyle(
         "rota-title",
-        fontName="Times-BoldItalic",
-        fontSize=16,
-        textColor=TITLE_BLUE,
+        fontName=pal["title_font"],
+        fontSize=pal["title_size"],
+        textColor=pal["title"],
         alignment=1,  # center
         spaceAfter=4,
     )
@@ -136,32 +184,32 @@ def render_rota_pdf(
 
     style = TableStyle([
         # Outer border + grid lines
-        ("GRID", (0, 0), (-1, -1), 0.5, GRID_LINE),
-        ("BOX",  (0, 0), (-1, -1), 1.2, GRID_LINE),
+        ("GRID", (0, 0), (-1, -1), 0.5, pal["grid"]),
+        ("BOX",  (0, 0), (-1, -1), 1.2, pal["grid"]),
         # Header row 1 (week bands)
-        ("BACKGROUND", (0, 0), (-1, 0), PEACH_DARK),
+        ("BACKGROUND", (0, 0), (-1, 0), pal["peach_dark"]),
         ("TEXTCOLOR",  (0, 0), (-1, 0), colors.HexColor("#1a1a1a")),
         ("FONT",       (0, 0), (-1, 0), "Helvetica-Bold", 8),
         ("ALIGN",      (0, 0), (-1, 0), "CENTER"),
         ("VALIGN",     (0, 0), (-1, 0), "MIDDLE"),
         # Header row 2 (day letters)
-        ("BACKGROUND", (0, 1), (-1, 1), PEACH),
+        ("BACKGROUND", (0, 1), (-1, 1), pal["peach"]),
         ("FONT",       (0, 1), (-1, 1), "Helvetica-Bold", 9),
         ("ALIGN",      (0, 1), (-1, 1), "CENTER"),
         ("VALIGN",     (0, 1), (-1, 1), "MIDDLE"),
         # Header row 3 (dates)
-        ("BACKGROUND", (0, 2), (-1, 2), PEACH),
+        ("BACKGROUND", (0, 2), (-1, 2), pal["peach"]),
         ("FONT",       (0, 2), (-1, 2), "Helvetica", 8),
         ("ALIGN",      (0, 2), (-1, 2), "CENTER"),
         ("VALIGN",     (0, 2), (-1, 2), "MIDDLE"),
         # Identity column styling
-        ("BACKGROUND", (0, 3), (0, -1), colors.HexColor("#F8E5D2")),
+        ("BACKGROUND", (0, 3), (0, -1), pal["ident_bg"]),
         ("FONT",       (0, 3), (0, -1), "Helvetica-Bold", 7),
         ("ALIGN",      (0, 3), (0, -1), "LEFT"),
         ("VALIGN",     (0, 3), (0, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 3), (0, -1), 6),
         # Default cell styling for body
-        ("FONT",  (1, 3), (-1, -1), "Helvetica-Bold", 9),
+        ("FONT",  (1, 3), (-1, -1), pal["body_font"], 9),
         ("ALIGN", (1, 3), (-1, -1), "CENTER"),
         ("VALIGN", (1, 3), (-1, -1), "MIDDLE"),
     ])
@@ -176,10 +224,10 @@ def render_rota_pdf(
     for di, d in enumerate(days):
         col = di + 1
         if d.weekday() >= 5:  # Sat/Sun
-            style.add("BACKGROUND", (col, 1), (col, 2), PEACH_DARK)
+            style.add("BACKGROUND", (col, 1), (col, 2), pal["peach_dark"])
         # Week divider (3px right border at end of each week except last)
         if (di + 1) % 7 == 0 and di < len(days) - 1:
-            style.add("LINEAFTER", (col, 0), (col, -1), 1.5, WEEK_DIVIDER)
+            style.add("LINEAFTER", (col, 0), (col, -1), 1.5, pal["grid"])
 
     # Per-cell shift colour fill + text colour (body only)
     for row_i, s in enumerate(staff):
@@ -204,7 +252,7 @@ def render_rota_pdf(
     legend_items = [
         ("D", "Day shift",     SHIFT_FILL["D"],   colors.white),
         ("D*", "Day + Sleepover", SHIFT_FILL["D*"], colors.HexColor("#1a1a1a")),
-        ("N", "Waking Night",  colors.white,      colors.HexColor("#1a1a1a")),
+        ("N", "Waking Night",  SHIFT_FILL["N"],   colors.white),
         ("*", "Sleep-in only", SHIFT_FILL["*"],   colors.HexColor("#1a1a1a")),
         ("AL", "Annual Leave",  SHIFT_FILL["AL"],  colors.white),
         ("T", "Training",       SHIFT_FILL["TRN"], colors.white),
@@ -226,7 +274,7 @@ def render_rota_pdf(
         c = i * 2
         leg_style.add("BACKGROUND", (c, 0), (c, 0), bg)
         leg_style.add("TEXTCOLOR",  (c, 0), (c, 0), fg)
-        leg_style.add("BOX",        (c, 0), (c, 0), 0.5, GRID_LINE)
+        leg_style.add("BOX",        (c, 0), (c, 0), 0.5, pal["grid"])
         leg_style.add("ALIGN",      (c + 1, 0), (c + 1, 0), "LEFT")
         leg_style.add("LEFTPADDING", (c + 1, 0), (c + 1, 0), 4)
     legend_table.setStyle(leg_style)

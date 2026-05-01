@@ -261,7 +261,7 @@ html[data-theme="modern"] .shift-cell {
 .shift-blank   { background: hsl(0 0% 100%); color: transparent; }
 .shift-D       { background: #3F8C4D; color: #FFFFFF; }
 .shift-Dstar   { background: #F5D04A; color: hsl(220 15% 20%); }
-.shift-N       { background: #FFFFFF; color: hsl(220 15% 18%); }
+.shift-N       { background: #5A8A4A; color: #FFFFFF; }   /* Paper: GREEN — same as D, per user req */
 .shift-star    { background: #FFE066; color: hsl(220 15% 20%); }
 .shift-OFF     { background: hsl(0 0% 100%); color: transparent; }
 .shift-AL      { background: #C9377C; color: #FFFFFF; }

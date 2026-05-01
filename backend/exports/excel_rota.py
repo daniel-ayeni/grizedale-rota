@@ -17,11 +17,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-# Paper-theme cell colours, ARGB.
+# Shift cell colours, ARGB. D and N share solid green per user spec.
 SHIFT_FILL = {
     "D":   "FF5A8A4A",
     "D*":  "FFE8C547",
-    "N":   "FFFFFFFF",
+    "N":   "FF5A8A4A",   # GREEN (matches D)
     "*":   "FFF4D03F",
     "AL":  "FFC2185B",
     "TRN": "FFB71C1C",
@@ -31,7 +31,7 @@ SHIFT_FILL = {
 SHIFT_TEXT = {
     "D":   "FFFFFFFF",
     "D*":  "FF1A1A1A",
-    "N":   "FF1A1A1A",
+    "N":   "FFFFFFFF",   # green bg → white text
     "*":   "FF1A1A1A",
     "AL":  "FFFFFFFF",
     "TRN": "FFFFFFFF",
@@ -41,10 +41,28 @@ SHIFT_TEXT = {
 SHIFT_LABEL_OUT = {"D": "D", "D*": "D*", "N": "N", "*": "*", "AL": "AL", "TRN": "T", "OFF": "", "": ""}
 SHIFT_HOURS = {"D": 12, "D*": 14, "N": 12, "*": 0, "OFF": 0, "AL": 0, "TRN": 0, "": 0}
 DOW_LETTERS = ["M", "T", "W", "T", "F", "S", "S"]
-PEACH_FILL = PatternFill(start_color="FFF4B68A", end_color="FFF4B68A", fill_type="solid")
-PEACH_DARK = PatternFill(start_color="FFE89A66", end_color="FFE89A66", fill_type="solid")
-IDENT_FILL = PatternFill(start_color="FFF8E5D2", end_color="FFF8E5D2", fill_type="solid")
-SUMMARY_HEADER = PatternFill(start_color="FFE89A66", end_color="FFE89A66", fill_type="solid")
+
+# Theme palettes — only the chrome (headers, identity tint, title font)
+# differs. Shift cell colours are shared.
+THEMES = {
+    "paper": {
+        "header":     PatternFill(start_color="FFF4B68A", end_color="FFF4B68A", fill_type="solid"),
+        "header_dark": PatternFill(start_color="FFE89A66", end_color="FFE89A66", fill_type="solid"),
+        "ident":      PatternFill(start_color="FFF8E5D2", end_color="FFF8E5D2", fill_type="solid"),
+        "title_font": Font(name="Times New Roman", size=14, bold=True, italic=True, color="FF1A3A8C"),
+    },
+    "modern": {
+        "header":     PatternFill(start_color="FFE2E8F0", end_color="FFE2E8F0", fill_type="solid"),
+        "header_dark": PatternFill(start_color="FFCBD5E1", end_color="FFCBD5E1", fill_type="solid"),
+        "ident":      PatternFill(start_color="FFF8FAFC", end_color="FFF8FAFC", fill_type="solid"),
+        "title_font": Font(name="Calibri", size=14, bold=True, color="FF0F172A"),
+    },
+}
+
+PEACH_FILL = THEMES["paper"]["header"]      # legacy aliases used below
+PEACH_DARK = THEMES["paper"]["header_dark"]
+IDENT_FILL = THEMES["paper"]["ident"]
+SUMMARY_HEADER = THEMES["paper"]["header_dark"]
 
 THIN = Side(style="thin", color="FF1A1A1A")
 THICK = Side(style="medium", color="FF1A1A1A")
@@ -54,7 +72,11 @@ def _parse(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale") -> bytes:
+def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale", theme: str = "paper") -> bytes:
+    pal = THEMES.get(theme, THEMES["paper"])
+    header_fill = pal["header"]
+    header_dark = pal["header_dark"]
+    ident_fill = pal["ident"]
     start = _parse(rota["start_date"])
     weeks = int(rota.get("weeks", 4))
     days: list[date] = [start + timedelta(days=i) for i in range(weeks * 7)]
@@ -71,22 +93,22 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
         f" – {days[-1].strftime('%d %b %Y')} ROTA"
     ))
     title_cell = ws.cell(row=1, column=1)
-    title_cell.font = Font(name="Times New Roman", size=14, bold=True, italic=True, color="FF1A3A8C")
+    title_cell.font = pal["title_font"]
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=1 + len(days))
     ws.row_dimensions[1].height = 24
 
     # ── Header rows (rows 2 and 3) ────────────────────────────────
     # Row 2 = day letters; row 3 = date numbers
-    ws.cell(row=2, column=1, value="STAFF").fill = PEACH_DARK
-    ws.cell(row=3, column=1, value="").fill = PEACH_DARK
+    ws.cell(row=2, column=1, value="STAFF").fill = header_dark
+    ws.cell(row=3, column=1, value="").fill = header_dark
     for di, d in enumerate(days):
         col = di + 2
         is_we = d.weekday() >= 5
         c1 = ws.cell(row=2, column=col, value=DOW_LETTERS[d.weekday()])
         c2 = ws.cell(row=3, column=col, value=d.day)
         for c in (c1, c2):
-            c.fill = PEACH_DARK if is_we else PEACH_FILL
+            c.fill = header_dark if is_we else header_fill
             c.alignment = Alignment(horizontal="center", vertical="center")
             c.font = Font(bold=True, size=10, color="FF1A1A1A")
             c.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -103,7 +125,7 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
         ident = ws.cell(row=row, column=1, value=(
             f"{s.get('role', '')} · {s['initials']} ({s.get('target_weekly_hours', '')}h)"
         ))
-        ident.fill = IDENT_FILL
+        ident.fill = ident_fill
         ident.font = Font(bold=True, size=10)
         ident.alignment = Alignment(horizontal="left", vertical="center", indent=1)
         ident.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -141,7 +163,7 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
     ]
     for ci, h in enumerate(headers):
         c = ws2.cell(row=1, column=ci + 1, value=h)
-        c.fill = SUMMARY_HEADER
+        c.fill = header_dark
         c.font = Font(bold=True, size=10)
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)

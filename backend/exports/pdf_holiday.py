@@ -35,18 +35,29 @@ def render_holiday_pdf(
     leave_rows: list[dict],
     public_holidays: list[dict],
     home_name: str = "Grizedale",
+    theme: str = "paper",
 ) -> bytes:
     """leave_rows = [{staff_initials, date, type, ...}, ...]
        public_holidays = [{date, name}, ...]
+       theme = "paper" | "modern" — picks chrome palette only.
     """
+    # Theme-aware chrome (shift / leave colours stay the same).
+    if theme == "modern":
+        peach = colors.HexColor("#E2E8F0")        # slate-200
+        title_colour = colors.HexColor("#0F172A")  # slate-900
+        title_font = "Helvetica-Bold"
+    else:
+        peach = PEACH
+        title_colour = TITLE_BLUE
+        title_font = "Times-BoldItalic"
     by_date: dict[str, list[dict]] = {}
     for row in leave_rows:
         by_date.setdefault(row["date"], []).append(row)
     hol_dates = {h["date"] for h in (public_holidays or [])}
 
     title_style = ParagraphStyle(
-        "yh-title", fontName="Times-BoldItalic", fontSize=14,
-        textColor=TITLE_BLUE, alignment=1, spaceAfter=6,
+        "yh-title", fontName=title_font, fontSize=14,
+        textColor=title_colour, alignment=1, spaceAfter=6,
     )
     foot_style = ParagraphStyle(
         "yh-foot", fontName="Helvetica", fontSize=7,
@@ -91,7 +102,7 @@ def render_holiday_pdf(
         t = Table(rows, colWidths=[col_w] * 7, rowHeights=row_h)
         st = TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.3, GRID_LINE),
-            ("BACKGROUND", (0, 0), (-1, 0), PEACH),
+            ("BACKGROUND", (0, 0), (-1, 0), peach),
             ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 6),
             ("ALIGN", (0, 0), (-1, 0), "CENTER"),
             ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),

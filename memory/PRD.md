@@ -20,6 +20,23 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 ## What's been implemented (latest first)
 
 ### 2026-05-01 — Consolidated batch (this session)
+- **N cells GREEN per user spec**: Paper-theme online + PDF + Excel
+  exports now render N cells with the same solid green (#5A8A4A) +
+  white text as D cells. Modern theme online unchanged (clean palette).
+- **Export theme picker**: clicking PDF / Excel / Holiday-PDF opens a
+  small dialog "Which theme do you want the export to use?" with
+  Paper (default) / Modern visual tiles. Selection passes
+  `?theme=paper|modern` to the endpoint.
+- **Locked-cell generate bug fix**: `/generate` now PRE-VALIDATES every
+  locked cell against (a) staff capabilities and (b) existing leave on
+  the same date — surfacing a clear, day-grouped 422 with the
+  conflicting cells before even calling the solver. The solver call is
+  also wrapped in try/except so any internal failure becomes a clean
+  422 with a useful message instead of a 500. Frontend's blockers
+  modal now triggers on ANY structured failure response (with `reason`,
+  `success: false`, OR a populated `blocking_constraints` array) so
+  the manager always sees the specific problem instead of a generic
+  toast.
 - **Export row order fix**: `display_order` field on every staff doc
   (J.C.=10 → J.R.=80) seeded from grizedale.json array index. PDF/Excel
   exports + `/api/staff` listing all sort by display_order. PDF + Excel

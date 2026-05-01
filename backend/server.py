@@ -89,6 +89,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _dow_short(date_str: str) -> str:
+    """Three-letter weekday for a 'YYYY-MM-DD' string. Used by lock
+    pre-check error formatting so the frontend can show a friendly
+    'Mon 2026-04-20' instead of a bare ISO date."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").strftime("%a")
+    except ValueError:
+        return ""
+
+
 def _strip_id(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     if not doc:
         return doc
@@ -801,6 +811,88 @@ async def generate_rota(rota_id: str, current=Depends(auth_required)):
     ]
     payload["locked_cells"] = locked_cells
 
+    # 2a. PRE-VALIDATE locked cells before calling the solver. The solver
+    # would otherwise return a generic INFEASIBLE that doesn't pinpoint
+    # *which* lock is at fault. Catching capability mismatches here gives
+    # the manager a clear, immediately-fixable error.
+    staff_by_init = {s["initials"]: s for s in payload["staff"]}
+    pre_check_errors: list[dict] = []
+    for lock in locked_cells:
+        s_doc = staff_by_init.get(lock["staff_initials"])
+        if not s_doc:
+            pre_check_errors.append({
+                "date": lock["date"],
+                "day_of_week": _dow_short(lock["date"]),
+                "problems": [f"Locked cell references unknown / inactive staff '{lock['staff_initials']}'"],
+            })
+            continue
+        sh = lock["shift"]
+        if sh in ("D",) and not s_doc.get("can_do_days", True):
+            pre_check_errors.append({
+                "date": lock["date"],
+                "day_of_week": _dow_short(lock["date"]),
+                "problems": [f"{lock['staff_initials']} is locked to D but `can_do_days` is False"],
+            })
+        elif sh in ("D*",) and (not s_doc.get("can_do_days", True) or not s_doc.get("can_do_sleepover", False)):
+            pre_check_errors.append({
+                "date": lock["date"],
+                "day_of_week": _dow_short(lock["date"]),
+                "problems": [f"{lock['staff_initials']} is locked to D* but is not flagged for both day + sleepover"],
+            })
+        elif sh == "N" and not s_doc.get("can_do_nights", False):
+            pre_check_errors.append({
+                "date": lock["date"],
+                "day_of_week": _dow_short(lock["date"]),
+                "problems": [f"{lock['staff_initials']} is locked to N but `can_do_nights` is False"],
+            })
+        elif sh == "*" and not s_doc.get("can_do_sleepover", False):
+            pre_check_errors.append({
+                "date": lock["date"],
+                "day_of_week": _dow_short(lock["date"]),
+                "problems": [f"{lock['staff_initials']} is locked to * but `can_do_sleepover` is False"],
+            })
+
+    # 2b. Detect conflict between a lock and a leave row (same staff+date).
+    # If the user locked a working shift on a date the staff has AL/TRN,
+    # the solver would treat the lock as winner but the manager probably
+    # didn't intend that — surface it as a warning.
+    leave_keys = {(l_["staff_initials"], l_["date"]): l_["type"]
+                  for l_ in await db.leave.find(
+                      {"date": {"$gte": start_date, "$lte": end_date}}, {"_id": 0}
+                  ).to_list(10000)
+                  if l_.get("type") in {"AL", "TRN"}}
+    for lock in locked_cells:
+        leave_type = leave_keys.get((lock["staff_initials"], lock["date"]))
+        if leave_type and lock["shift"] not in {"AL", "TRN", "OFF"}:
+            pre_check_errors.append({
+                "date": lock["date"],
+                "day_of_week": _dow_short(lock["date"]),
+                "problems": [
+                    f"{lock['staff_initials']} is locked to {lock['shift']} on {lock['date']} "
+                    f"but has {leave_type} on the same date — remove either the lock or the leave"
+                ],
+            })
+
+    if pre_check_errors:
+        # Group by date (one entry per conflicting date)
+        by_date: dict[str, dict] = {}
+        for e in pre_check_errors:
+            d = e["date"]
+            if d not in by_date:
+                by_date[d] = {"date": d, "day_of_week": e["day_of_week"], "problems": []}
+            by_date[d]["problems"].extend(e["problems"])
+        return JSONResponse(status_code=422, content={
+            "success": False,
+            "reason": (
+                f"Cannot generate — {len(pre_check_errors)} locked cell"
+                f"{'' if len(pre_check_errors) == 1 else 's'} conflict with hard rules "
+                f"(staff capabilities or existing leave). Fix the lock(s) and try again."
+            ),
+            "blocking_constraints": list(by_date.values()),
+            "solver_status": "PRE_CHECK_FAILED",
+            "solve_time_ms": 0,
+        })
+
     # 3. AL / TRN cells from `leave` collection within the date window
     leave_docs = await db.leave.find(
         {"date": {"$gte": start_date, "$lte": end_date}}, {"_id": 0}
@@ -826,14 +918,32 @@ async def generate_rota(rota_id: str, current=Depends(auth_required)):
     ).to_list(10000)
     payload["accepted_requests"] = accepted_reqs
 
-    # 5. Solve
+    # 5. Solve. Wrap in try/except so a solver-internal failure surfaces
+    # as a clean 422 with a useful message instead of a 500.
     time_limit = int(payload.get("solver_time_limit_s", 12))
-    result = solve_rota(payload, time_limit_s=time_limit)
-
-    if not result.get("success"):
+    try:
+        result = solve_rota(payload, time_limit_s=time_limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Solver internal error during /generate (rota=%s)", rota_id)
         return JSONResponse(status_code=422, content={
             "success": False,
-            "reason": result.get("reason"),
+            "reason": f"Solver crashed: {type(exc).__name__}: {exc}",
+            "blocking_constraints": [],
+            "solver_status": "INTERNAL_ERROR",
+            "solve_time_ms": 0,
+        })
+
+    if not result.get("success"):
+        # Augment the reason when blocking_constraints is empty so the
+        # frontend always has *something* useful to show.
+        reason = result.get("reason") or (
+            f"Solver returned {result.get('solver_status', 'no solution')} but "
+            f"could not pinpoint specific blockers. Try unlocking some cells "
+            f"and re-generating."
+        )
+        return JSONResponse(status_code=422, content={
+            "success": False,
+            "reason": reason,
             "blocking_constraints": result.get("blocking_constraints", []),
             "solver_status": result.get("solver_status"),
             "solve_time_ms": result.get("solve_time_ms"),
@@ -880,7 +990,11 @@ async def generate_rota(rota_id: str, current=Depends(auth_required)):
 # Phase 4: Exports (PDF + Excel)
 # ============================================================================
 @api.get("/rotas/{rota_id}/export.pdf")
-async def export_rota_pdf(rota_id: str, current=Depends(auth_required)):
+async def export_rota_pdf(
+    rota_id: str,
+    theme: str = Query(default="paper", regex="^(paper|modern)$"),
+    current=Depends(auth_required),
+):
     from exports.pdf_rota import render_rota_pdf
     rota = await _load_rota(rota_id)
     staff = await db.staff.find({"active": True}, {"_id": 0}).to_list(100)
@@ -888,8 +1002,8 @@ async def export_rota_pdf(rota_id: str, current=Depends(auth_required)):
     staff.sort(key=lambda s: (s.get("display_order", 9999), s.get("initials", "")))
     settings = await db.settings.find_one({}, {"_id": 0}) or {}
     home_name = settings.get("home_name", "Grizedale")
-    pdf_bytes = render_rota_pdf(rota, staff, home_name=home_name)
-    fname = f"{home_name.lower()}-rota-{rota['start_date']}.pdf"
+    pdf_bytes = render_rota_pdf(rota, staff, home_name=home_name, theme=theme)
+    fname = f"{home_name.lower()}-rota-{rota['start_date']}-{theme}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -898,15 +1012,19 @@ async def export_rota_pdf(rota_id: str, current=Depends(auth_required)):
 
 
 @api.get("/rotas/{rota_id}/export.xlsx")
-async def export_rota_xlsx(rota_id: str, current=Depends(auth_required)):
+async def export_rota_xlsx(
+    rota_id: str,
+    theme: str = Query(default="paper", regex="^(paper|modern)$"),
+    current=Depends(auth_required),
+):
     from exports.excel_rota import render_rota_xlsx
     rota = await _load_rota(rota_id)
     staff = await db.staff.find({"active": True}, {"_id": 0}).to_list(100)
     staff.sort(key=lambda s: (s.get("display_order", 9999), s.get("initials", "")))
     settings = await db.settings.find_one({}, {"_id": 0}) or {}
     home_name = settings.get("home_name", "Grizedale")
-    xlsx_bytes = render_rota_xlsx(rota, staff, home_name=home_name)
-    fname = f"{home_name.lower()}-rota-{rota['start_date']}.xlsx"
+    xlsx_bytes = render_rota_xlsx(rota, staff, home_name=home_name, theme=theme)
+    fname = f"{home_name.lower()}-rota-{rota['start_date']}-{theme}.xlsx"
     return Response(
         content=xlsx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -917,6 +1035,7 @@ async def export_rota_xlsx(rota_id: str, current=Depends(auth_required)):
 @api.get("/holidays/export.pdf")
 async def export_holiday_pdf(
     year: int = Query(default=2026),
+    theme: str = Query(default="paper", regex="^(paper|modern)$"),
     current=Depends(auth_required),
 ):
     from exports.pdf_holiday import render_holiday_pdf
@@ -927,8 +1046,8 @@ async def export_holiday_pdf(
     settings = await db.settings.find_one({}, {"_id": 0}) or {}
     home_name = settings.get("home_name", "Grizedale")
     public_holidays = settings.get("public_holidays") or []
-    pdf_bytes = render_holiday_pdf(year, leave_rows, public_holidays, home_name=home_name)
-    fname = f"{home_name.lower()}-holiday-sheet-{year}.pdf"
+    pdf_bytes = render_holiday_pdf(year, leave_rows, public_holidays, home_name=home_name, theme=theme)
+    fname = f"{home_name.lower()}-holiday-sheet-{year}-{theme}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

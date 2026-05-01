@@ -103,6 +103,12 @@ export default function RotaEditor() {
 
     const [exportingPdf, setExportingPdf] = useState(false);
     const [exportingXlsx, setExportingXlsx] = useState(false);
+    /* Export-theme picker — opens before kicking off a PDF or XLSX
+       download so the manager can pick the visual style. Default Paper
+       (the original handwritten look). Modern is a clean slate/teal
+       chrome. The shift cell colours (D + N green, D* yellow, etc.) are
+       shared across both. */
+    const [exportPicker, setExportPicker] = useState(null);  // { kind: 'pdf' | 'xlsx', theme: 'paper' | 'modern' }
 
     /* Download helper that authenticates the request and streams the
        blob to the browser. Used by Export PDF and Export Excel. */
@@ -196,9 +202,21 @@ export default function RotaEditor() {
             const sec = ((data?.solve_time_ms || 0) / 1000).toFixed(1);
             toast.success(`Rota generated in ${sec}s · ${summary.hard} hard · soft score ${data?.soft_violations_score ?? 0} · ${data?.locked_preserved || 0} locked preserved`);
         } catch (err) {
+            // Surface ANY structured solver-style failure in the blockers
+            // modal — not just successes-with-array. This catches:
+            //   - 422 with explicit blocking_constraints (most common)
+            //   - 422 with a `reason` but no specific blockers (fallback)
+            //   - 422 with PRE_CHECK_FAILED (lock-vs-capability conflict)
+            //   - 500/network errors → still falls back to a clean toast.
             const detail = err?.response?.data;
-            if (detail && detail.success === false && Array.isArray(detail.blocking_constraints)) {
-                setBlockers(detail);
+            if (detail && (detail.success === false || detail.reason || Array.isArray(detail.blocking_constraints))) {
+                setBlockers({
+                    reason: detail.reason || "Solver could not generate a valid rota.",
+                    blocking_constraints: Array.isArray(detail.blocking_constraints)
+                        ? detail.blocking_constraints
+                        : [],
+                    solver_status: detail.solver_status || err?.response?.status,
+                });
                 setBlockersOpen(true);
             } else {
                 toast.error(formatApiError(err));
@@ -452,11 +470,7 @@ export default function RotaEditor() {
                     <Button
                         variant="outline" size="sm"
                         disabled={exportingPdf}
-                        onClick={() => downloadFile(
-                            `/rotas/${id}/export.pdf`,
-                            `${(homeName || "grizedale").toLowerCase()}-rota-${rota.start_date}.pdf`,
-                            setExportingPdf,
-                        )}
+                        onClick={() => setExportPicker({ kind: "pdf", theme: "paper" })}
                         data-testid="rota-export-pdf"
                     >
                         {exportingPdf
@@ -467,11 +481,7 @@ export default function RotaEditor() {
                     <Button
                         variant="outline" size="sm"
                         disabled={exportingXlsx}
-                        onClick={() => downloadFile(
-                            `/rotas/${id}/export.xlsx`,
-                            `${(homeName || "grizedale").toLowerCase()}-rota-${rota.start_date}.xlsx`,
-                            setExportingXlsx,
-                        )}
+                        onClick={() => setExportPicker({ kind: "xlsx", theme: "paper" })}
                         data-testid="rota-export-xlsx"
                     >
                         {exportingXlsx
@@ -759,6 +769,68 @@ export default function RotaEditor() {
                     </Button>
                 </div>
             )}
+
+            {/* Export theme-picker dialog */}
+            <AlertDialog
+                open={!!exportPicker}
+                onOpenChange={(o) => { if (!o) setExportPicker(null); }}
+            >
+                <AlertDialogContent data-testid="export-theme-picker">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Export rota</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Which theme do you want the export to use?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                        {[
+                            { value: "paper", label: "Paper", note: "Handwritten style — peach headers, italic blue title" },
+                            { value: "modern", label: "Modern", note: "Clean slate/teal — sans-serif, minimal chrome" },
+                        ].map((opt) => (
+                            <button
+                                key={opt.value}
+                                type="button"
+                                onClick={() => setExportPicker((p) => ({ ...p, theme: opt.value }))}
+                                className="text-left p-3 rounded-md border transition-colors"
+                                style={{
+                                    borderColor: exportPicker?.theme === opt.value
+                                        ? "hsl(var(--primary))"
+                                        : "hsl(var(--border))",
+                                    background: exportPicker?.theme === opt.value
+                                        ? "hsl(var(--primary) / 0.08)"
+                                        : "transparent",
+                                    borderWidth: exportPicker?.theme === opt.value ? "2px" : "1px",
+                                }}
+                                data-testid={`export-theme-${opt.value}`}
+                            >
+                                <div className="font-semibold mb-1">{opt.label}</div>
+                                <div className="text-xs text-muted-foreground">{opt.note}</div>
+                            </button>
+                        ))}
+                    </div>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel data-testid="export-cancel">Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                const kind = exportPicker.kind;
+                                const theme = exportPicker.theme || "paper";
+                                const home = (homeName || "grizedale").toLowerCase();
+                                const ext = kind === "pdf" ? "pdf" : "xlsx";
+                                const setBusy = kind === "pdf" ? setExportingPdf : setExportingXlsx;
+                                setExportPicker(null);
+                                downloadFile(
+                                    `/rotas/${id}/export.${ext}?theme=${theme}`,
+                                    `${home}-rota-${rota.start_date}-${theme}.${ext}`,
+                                    setBusy,
+                                );
+                            }}
+                            data-testid="export-confirm"
+                        >
+                            Export
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             {/* Bulk-action confirmation modal */}
             <AlertDialog

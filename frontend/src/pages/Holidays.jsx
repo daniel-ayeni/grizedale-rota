@@ -14,6 +14,10 @@ import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import {
+    AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+    AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 import { ymd } from "@/lib/shifts";
@@ -28,6 +32,7 @@ export default function Holidays() {
     const [view, setView] = useState("year");
     const [year, setYear] = useState(2026);
     const [exportingPdf, setExportingPdf] = useState(false);
+    const [exportPicker, setExportPicker] = useState(null);  // selected theme or null
     const [monthIdx, setMonthIdx] = useState(3); // April default
     const [leave, setLeave] = useState([]);
     const [holidays, setHolidays] = useState([]);
@@ -63,7 +68,67 @@ export default function Holidays() {
 
     return (
         <div className="space-y-6" data-testid="holidays-page">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <AlertDialog
+                open={!!exportPicker}
+                onOpenChange={(o) => { if (!o) setExportPicker(null); }}
+            >
+                <AlertDialogContent data-testid="holiday-export-picker">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Export holiday sheet</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Which theme do you want the export to use?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                        {[
+                            { value: "paper", label: "Paper", note: "Handwritten style — peach, italic title" },
+                            { value: "modern", label: "Modern", note: "Clean slate — sans-serif, minimal chrome" },
+                        ].map((opt) => (
+                            <button
+                                key={opt.value}
+                                type="button"
+                                onClick={() => setExportPicker(opt.value)}
+                                className="text-left p-3 rounded-md border transition-colors"
+                                style={{
+                                    borderColor: exportPicker === opt.value ? "hsl(var(--primary))" : "hsl(var(--border))",
+                                    background: exportPicker === opt.value ? "hsl(var(--primary) / 0.08)" : "transparent",
+                                    borderWidth: exportPicker === opt.value ? "2px" : "1px",
+                                }}
+                                data-testid={`holiday-export-theme-${opt.value}`}
+                            >
+                                <div className="font-semibold mb-1">{opt.label}</div>
+                                <div className="text-xs text-muted-foreground">{opt.note}</div>
+                            </button>
+                        ))}
+                    </div>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel data-testid="holiday-export-cancel">Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={async () => {
+                                const theme = exportPicker || "paper";
+                                setExportPicker(null);
+                                setExportingPdf(true);
+                                try {
+                                    const res = await api.get(`/holidays/export.pdf?year=${year}&theme=${theme}`, { responseType: "blob" });
+                                    const blob = new Blob([res.data], { type: "application/pdf" });
+                                    const url = window.URL.createObjectURL(blob);
+                                    const a = document.createElement("a");
+                                    a.href = url;
+                                    a.download = `grizedale-holiday-sheet-${year}-${theme}.pdf`;
+                                    document.body.appendChild(a); a.click(); a.remove();
+                                    setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+                                    toast.success(`Holiday sheet ${year} (${theme}) downloaded`);
+                                } catch (err) {
+                                    toast.error(formatApiError(err));
+                                } finally { setExportingPdf(false); }
+                            }}
+                            data-testid="holiday-export-confirm"
+                        >
+                            Export
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <div>
                     <h1 className="display text-3xl font-semibold">Holidays</h1>
                     <p className="text-sm text-muted-foreground mt-1">
@@ -83,22 +148,7 @@ export default function Holidays() {
                     <Button
                         variant="outline" size="sm"
                         disabled={exportingPdf}
-                        onClick={async () => {
-                            setExportingPdf(true);
-                            try {
-                                const res = await api.get(`/holidays/export.pdf?year=${year}`, { responseType: "blob" });
-                                const blob = new Blob([res.data], { type: "application/pdf" });
-                                const url = window.URL.createObjectURL(blob);
-                                const a = document.createElement("a");
-                                a.href = url;
-                                a.download = `grizedale-holiday-sheet-${year}.pdf`;
-                                document.body.appendChild(a); a.click(); a.remove();
-                                setTimeout(() => window.URL.revokeObjectURL(url), 1000);
-                                toast.success(`Holiday sheet ${year} downloaded`);
-                            } catch (err) {
-                                toast.error(formatApiError(err));
-                            } finally { setExportingPdf(false); }
-                        }}
+                        onClick={() => setExportPicker("paper")}
                         data-testid="holidays-export-pdf"
                     >
                         {exportingPdf
