@@ -34,6 +34,17 @@ DAY_COVER_SHIFTS = {"D", "D*"}
 NIGHT_COVER_SHIFTS = {"N", "D*", "*"}
 SHIFT_HOURS = {"D": 12, "D*": 14, "N": 12, "*": 0, "OFF": 0, "AL": 0, "TRN": 0, "": 0}
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+DOW_FROM_STR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _normalise_dow(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int) and 0 <= value <= 6:
+        return value
+    if isinstance(value, str):
+        return DOW_FROM_STR.get(value.strip().lower()[:3])
+    return None
 
 
 def _parse_date(s: str) -> date:
@@ -295,6 +306,7 @@ def validate_rota(
 
     # --- senior_weekend_cover ------------------------------------------
     # For each Sat and Sun, at least one of {L.M., L.D.} must be on D or D*.
+    # AL exemption: skip when BOTH seniors are on AL/TRN that day.
     SENIOR_STAFF = ("L.M.", "L.D.")
     mode_sw = _mode_for(rules_config, "senior_weekend_cover", "hard")
     present_seniors = [s for s in SENIOR_STAFF if s in staff_by]
@@ -303,15 +315,19 @@ def validate_rota(
             dow = (_parse_date(d_str).weekday())
             if dow < 5:
                 continue
-            on_cover = [s for s in present_seniors
+            avail_seniors = [s for s in present_seniors
+                             if cell[(d_str, s)]["shift"] not in {"AL", "TRN"}]
+            if not avail_seniors:
+                continue  # both seniors on AL/TRN — rule unsatisfiable, skip
+            on_cover = [s for s in avail_seniors
                         if cell[(d_str, s)]["shift"] in {"D", "D*"}]
             if not on_cover:
                 violations.append(_v("senior_weekend_cover", mode_sw,
-                    f"No senior ({' or '.join(present_seniors)}) on day cover "
+                    f"No senior ({' or '.join(avail_seniors)}) on day cover "
                     f"on {d_str} ({DOW_NAMES[dow]})",
                     date_=d_str,
                     affected_cells=[{"date": d_str, "staff_initials": s}
-                                    for s in present_seniors]))
+                                    for s in avail_seniors]))
 
     # --- avoid_pair_seniors --------------------------------------------
     # Soft penalty-style violation when BOTH L.M. and L.D. are on day cover
@@ -359,18 +375,26 @@ def validate_rota(
                                         for i in on_al]))
 
     # --- min_sleepover_per_week_for_seniors ----------------------------
-    # For each listed staff and each week, check D* count >= min.
-    # Skips weeks where the staff has >= 5 AL/TRN days (unavailable).
+    # New params shape: {rules: [{staff_initials: [...], min_per_week: N}, ...]}
     msl_mode = _mode_for(rules_config, "min_sleepover_per_week_for_seniors", "soft")
     if msl_mode != "off":
         msl_entry = (rules_config or {}).get("min_sleepover_per_week_for_seniors") or {}
         msl_params = msl_entry.get("params") if isinstance(msl_entry, dict) else {}
         msl_params = msl_params or {}
-        msl_staff = [s for s in (msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
-                     if s in staff_by]
-        msl_min = max(0, int(msl_params.get("min_sleepovers_per_week", 1)))
-        if msl_min > 0 and msl_staff:
-            for s in msl_staff:
+        if "rules" in msl_params:
+            msl_rules = msl_params.get("rules") or []
+        else:
+            msl_rules = [{
+                "staff_initials": msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."],
+                "min_per_week": msl_params.get("min_sleepovers_per_week", 1),
+            }]
+        for rule_entry in msl_rules:
+            min_n = max(0, int(rule_entry.get("min_per_week", 1)))
+            if min_n <= 0:
+                continue
+            entry_staff = [s for s in (rule_entry.get("staff_initials") or [])
+                           if s in staff_by]
+            for s in entry_staff:
                 for w in range(weeks):
                     week_strs = day_strs[w * 7:(w + 1) * 7]
                     dstar_w = sum(1 for d in week_strs if cell[(d, s)]["shift"] == "D*")
@@ -378,14 +402,272 @@ def validate_rota(
                         1 for d in week_strs
                         if cell[(d, s)]["shift"] in {"AL", "TRN"}
                     )
-                    if unavail_w >= 5:
-                        continue  # unavailable that week — skip
-                    if dstar_w < msl_min:
+                    # AL exemption: skip when staff has >=3 AL/TRN days that week.
+                    if unavail_w >= 3:
+                        continue
+                    # Scale required min by unavail (rough heuristic: each
+                    # pair of unavail days knocks 1 off the required min).
+                    eff_min = max(0, min_n - (unavail_w // 2))
+                    if eff_min <= 0:
+                        continue
+                    if dstar_w < eff_min:
                         violations.append(_v("min_sleepover_per_week_for_seniors", msl_mode,
-                            f"{s}: only {dstar_w} D* in week {w + 1} (need ≥{msl_min})",
+                            f"{s}: only {dstar_w} D* in week {w + 1} (need ≥{eff_min}"
+                            + (f", scaled from {min_n} for {unavail_w} AL/TRN day(s)" if eff_min != min_n else "")
+                            + ")",
                             staff_initials=s, date_=week_strs[0],
                             affected_cells=[{"date": d, "staff_initials": s}
                                             for d in week_strs]))
+
+    # --- senior_monday_cover ------------------------------------------
+    smc_mode = _mode_for(rules_config, "senior_monday_cover", "soft")
+    if smc_mode != "off":
+        smc_entry = (rules_config or {}).get("senior_monday_cover") or {}
+        smc_params = smc_entry.get("params") if isinstance(smc_entry, dict) else {}
+        smc_params = smc_params or {}
+        smc_staff = [s for s in (smc_params.get("staff_initials") or ["L.M.", "L.D."])
+                     if s in staff_by]
+        if smc_staff:
+            for di, d_str in enumerate(day_strs):
+                if _parse_date(d_str).weekday() != 0:  # not Monday
+                    continue
+                # AL exemption: skip when ALL configured senior staff are
+                # forced unavailable that Monday.
+                avail_smc = [s for s in smc_staff
+                             if cell[(d_str, s)]["shift"] not in {"AL", "TRN"}]
+                if not avail_smc:
+                    continue
+                covered = [s for s in avail_smc
+                           if cell[(d_str, s)]["shift"] in {"D", "D*"}]
+                if not covered:
+                    violations.append(_v("senior_monday_cover", smc_mode,
+                        f"No senior ({' or '.join(avail_smc)}) on day cover "
+                        f"on Monday {d_str}",
+                        date_=d_str,
+                        affected_cells=[{"date": d_str, "staff_initials": s}
+                                        for s in avail_smc]))
+
+    # --- respect_shift_preference -------------------------------------
+    rsp_mode = _mode_for(rules_config, "respect_shift_preference", "soft")
+    if rsp_mode != "off":
+        for s in staff_inits:
+            info = staff_by[s]
+            if not (info.get("can_do_days") and info.get("can_do_nights")):
+                continue
+            pref = (info.get("shift_preference") or "no_preference").lower()
+            if pref not in {"day", "night"}:
+                continue
+            off_pref = {"N", "*"} if pref == "day" else {"D", "D*"}
+            for d_str in day_strs:
+                shift = cell[(d_str, s)]["shift"]
+                if shift in off_pref:
+                    violations.append(_v("respect_shift_preference", rsp_mode,
+                        f"{s} on {shift} on {d_str} but prefers {pref}s",
+                        staff_initials=s, date_=d_str,
+                        affected_cells=[{"date": d_str, "staff_initials": s}]))
+
+    # --- avoid_star_then_night & avoid_star_then_day -----------------
+    asn_mode = _mode_for(rules_config, "avoid_star_then_night", "soft")
+    asd_mode = _mode_for(rules_config, "avoid_star_then_day", "soft")
+    if asn_mode != "off" or asd_mode != "off":
+        asd_entry = (rules_config or {}).get("avoid_star_then_day") or {}
+        asd_params = asd_entry.get("params") if isinstance(asd_entry, dict) else {}
+        asd_params = asd_params or {}
+        asd_overrides = asd_params.get("staff_overrides") or {"L.D.": 60, "L.M.": 60}
+        for s in staff_inits:
+            for i in range(len(day_strs) - 1):
+                today_d = day_strs[i]
+                tomorrow_d = day_strs[i + 1]
+                today = cell[(today_d, s)]["shift"]
+                tomorrow = cell[(tomorrow_d, s)]["shift"]
+                if today != "*":
+                    continue
+                if tomorrow == "N" and asn_mode != "off":
+                    violations.append(_v("avoid_star_then_night", asn_mode,
+                        f"{s}: * on {today_d} -> N on {tomorrow_d} "
+                        "(general avoid pattern)",
+                        date_=today_d, staff_initials=s,
+                        affected_cells=[
+                            {"date": today_d, "staff_initials": s},
+                            {"date": tomorrow_d, "staff_initials": s},
+                        ]))
+                if tomorrow == "D" and asd_mode != "off":
+                    is_override = s in asd_overrides
+                    msg_tail = (
+                        f"(strong-avoid pattern for {s})" if is_override
+                        else "(general avoid pattern)"
+                    )
+                    violations.append(_v("avoid_star_then_day", asd_mode,
+                        f"{s}: * on {today_d} -> D on {tomorrow_d} {msg_tail}",
+                        date_=today_d, staff_initials=s,
+                        affected_cells=[
+                            {"date": today_d, "staff_initials": s},
+                            {"date": tomorrow_d, "staff_initials": s},
+                        ]))
+
+    # --- avoid_star_for_staff -----------------------------------------
+    asfs_mode = _mode_for(rules_config, "avoid_star_for_staff", "soft")
+    asfs_staff: list[str] = []
+    if asfs_mode != "off":
+        asfs_entry = (rules_config or {}).get("avoid_star_for_staff") or {}
+        asfs_params = asfs_entry.get("params") if isinstance(asfs_entry, dict) else {}
+        asfs_params = asfs_params or {}
+        asfs_staff = [s for s in (asfs_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
+                      if s in staff_by]
+        for s in asfs_staff:
+            for d_str in day_strs:
+                if cell[(d_str, s)]["shift"] == "*":
+                    violations.append(_v("avoid_star_for_staff", asfs_mode,
+                        f"{s}: assigned `*` (sleepover-only) on {d_str} — "
+                        f"{s} prefers D or D* over bare *",
+                        date_=d_str, staff_initials=s,
+                        affected_cells=[{"date": d_str, "staff_initials": s}]))
+
+    # --- max_sleepover_per_week --------------------------------------
+    msx_mode = _mode_for(rules_config, "max_sleepover_per_week", "soft")
+    if msx_mode != "off":
+        msx_entry = (rules_config or {}).get("max_sleepover_per_week") or {}
+        msx_params = msx_entry.get("params") if isinstance(msx_entry, dict) else {}
+        msx_params = msx_params or {}
+        for rule_entry in (msx_params.get("rules") or []):
+            cap = rule_entry.get("max_per_week")
+            if cap is None:
+                continue
+            cap = int(cap)
+            entry_staff = [s for s in (rule_entry.get("staff_initials") or [])
+                           if s in staff_by]
+            for s in entry_staff:
+                for w in range(weeks):
+                    week_strs = day_strs[w * 7:(w + 1) * 7]
+                    dstars = sum(1 for d in week_strs if cell[(d, s)]["shift"] == "D*")
+                    if dstars > cap:
+                        violations.append(_v("max_sleepover_per_week", msx_mode,
+                            f"{s}: {dstars} D* in week {w + 1} (max {cap})",
+                            date_=week_strs[0], staff_initials=s,
+                            affected_cells=[{"date": d, "staff_initials": s}
+                                            for d in week_strs
+                                            if cell[(d, s)]["shift"] == "D*"]))
+
+    # --- fair_star_distribution ---------------------------------------
+    fsd_mode = _mode_for(rules_config, "fair_star_distribution", "soft")
+    if fsd_mode != "off":
+        avoid_set = set(asfs_staff)  # populated in the avoid_star_for_staff block above
+        eligible = [
+            s for s in staff_inits
+            if staff_by[s].get("can_do_sleepover") and s not in avoid_set
+        ]
+        if len(eligible) >= 2:
+            counts = {
+                s: sum(1 for d in day_strs if cell[(d, s)]["shift"] == "*")
+                for s in eligible
+            }
+            spread = max(counts.values()) - min(counts.values())
+            if spread > 2:
+                violations.append(_v("fair_star_distribution", fsd_mode,
+                    f"Uneven `*` distribution across eligible staff: "
+                    f"{counts} (spread {spread} > 2)",
+                    affected_cells=[]))
+
+    # --- weekday_weekend_split ----------------------------------------
+    wws_mode = _mode_for(rules_config, "weekday_weekend_split", "soft")
+    if wws_mode != "off":
+        wws_entry = (rules_config or {}).get("weekday_weekend_split") or {}
+        wws_params = wws_entry.get("params") if isinstance(wws_entry, dict) else {}
+        wws_params = wws_params or {}
+        for rule_entry in (wws_params.get("rules") or []):
+            wd_target = int(rule_entry.get("weekday_target", 1))
+            we_target = int(rule_entry.get("weekend_target", 1))
+            shift_types = set(rule_entry.get("shift_types") or ["N"])
+            entry_inits = rule_entry.get("staff_initials")
+            if isinstance(entry_inits, str):
+                entry_staff = [entry_inits] if entry_inits in staff_by else []
+            else:
+                entry_staff = [s for s in (entry_inits or []) if s in staff_by]
+            for s in entry_staff:
+                for w in range(weeks):
+                    week_strs = day_strs[w * 7:(w + 1) * 7]
+                    weekday_n = 0
+                    weekend_n = 0
+                    weekday_avail = 0
+                    weekend_avail = 0
+                    for d_str in week_strs:
+                        sh = cell[(d_str, s)]["shift"]
+                        is_weekend = _parse_date(d_str).weekday() >= 5
+                        # AL exemption: count only days where staff is NOT
+                        # forced unavailable (AL/TRN). Empty sub-windows
+                        # are skipped entirely.
+                        if sh in {"AL", "TRN"}:
+                            continue
+                        if is_weekend:
+                            weekend_avail += 1
+                        else:
+                            weekday_avail += 1
+                        if sh not in shift_types:
+                            continue
+                        if is_weekend:
+                            weekend_n += 1
+                        else:
+                            weekday_n += 1
+                    # Skip the rule entirely when both sub-windows are empty
+                    # (full-week AL/TRN). Otherwise only flag if the available
+                    # sub-window's count differs from target.
+                    weekday_off_target = weekday_avail > 0 and weekday_n != wd_target
+                    weekend_off_target = weekend_avail > 0 and weekend_n != we_target
+                    if weekday_off_target or weekend_off_target:
+                        violations.append(_v("weekday_weekend_split", wws_mode,
+                            f"{s}: week {w + 1} has {weekday_n} weekday + {weekend_n} weekend "
+                            f"{'/'.join(sorted(shift_types))} (target {wd_target}/{we_target})",
+                            staff_initials=s, date_=week_strs[0],
+                            affected_cells=[
+                                {"date": d, "staff_initials": s}
+                                for d in week_strs
+                                if cell[(d, s)]["shift"] in shift_types
+                            ]))
+
+    # --- pair_companion_on_day ----------------------------------------
+    pco_mode = _mode_for(rules_config, "pair_companion_on_day", "soft")
+    if pco_mode != "off":
+        pco_entry = (rules_config or {}).get("pair_companion_on_day") or {}
+        pco_params = pco_entry.get("params") if isinstance(pco_entry, dict) else {}
+        pco_params = pco_params or {}
+        for rule_entry in (pco_params.get("rules") or []):
+            focal = rule_entry.get("staff_initials")
+            if isinstance(focal, list):
+                focal = focal[0] if focal else None
+            if not focal or focal not in staff_by:
+                continue
+            companions = [c for c in (rule_entry.get("companion_initials") or [])
+                          if c in staff_by and c != focal]
+            if not companions:
+                continue
+            target_dow = _normalise_dow(rule_entry.get("day_of_week", "Wed"))
+            if target_dow is None:
+                continue
+            shift_types_set = set(rule_entry.get("shift_types") or ["D", "D*"])
+            for d_str in day_strs:
+                if _parse_date(d_str).weekday() != target_dow:
+                    continue
+                # AL exemption #1: focal on AL/TRN
+                focal_shift = cell[(d_str, focal)]["shift"]
+                if focal_shift in {"AL", "TRN"}:
+                    continue
+                # AL exemption #2: all companions on AL/TRN
+                avail_companions = [c for c in companions
+                                    if cell[(d_str, c)]["shift"] not in {"AL", "TRN"}]
+                if not avail_companions:
+                    continue
+                if focal_shift not in shift_types_set:
+                    continue  # focal not on a triggering shift — rule doesn't apply
+                companion_present = [c for c in avail_companions
+                                     if cell[(d_str, c)]["shift"] in shift_types_set]
+                if not companion_present:
+                    violations.append(_v("pair_companion_on_day", pco_mode,
+                        f"{focal} on {focal_shift} on {DOW_NAMES[target_dow]} {d_str} "
+                        f"with no companion ({', '.join(avail_companions)}) on a working "
+                        f"day shift",
+                        date_=d_str, staff_initials=focal,
+                        affected_cells=[{"date": d_str, "staff_initials": focal}]
+                            + [{"date": d_str, "staff_initials": c} for c in avail_companions]))
 
     return violations
 

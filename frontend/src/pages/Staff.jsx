@@ -36,8 +36,13 @@ const EMPTY = {
     can_do_sleepover: false,
     manager_weekday_admin: false,
     preferred_off_days: [],
+    accepts_overtime: false,
+    shift_preference: "no_preference",
     active: true,
 };
+
+const PREF_OPTIONS = ["day", "night", "no_preference"];
+const PREF_LABEL = { day: "Day", night: "Night", no_preference: "—" };
 
 export default function Staff() {
     const [staff, setStaff] = useState([]);
@@ -114,16 +119,18 @@ export default function Staff() {
                             <TableHead className="text-center hidden md:table-cell">Day</TableHead>
                             <TableHead className="text-center hidden md:table-cell">Night</TableHead>
                             <TableHead className="text-center hidden md:table-cell">Sleep</TableHead>
+                            <TableHead className="text-center" title="Day / Night preference (only meaningful when staff can do both)">Pref</TableHead>
+                            <TableHead className="text-center" title="Accepts overtime above contracted weekly hours">OT</TableHead>
                             <TableHead className="text-center">Active</TableHead>
                             <TableHead className="w-[100px] text-right">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {loading && (
-                            <TableRow><TableCell colSpan={13} className="text-center text-sm text-muted-foreground py-8">Loading…</TableCell></TableRow>
+                            <TableRow><TableCell colSpan={15} className="text-center text-sm text-muted-foreground py-8">Loading…</TableCell></TableRow>
                         )}
                         {!loading && staff.length === 0 && (
-                            <TableRow><TableCell colSpan={13} className="text-center text-sm text-muted-foreground py-8">No staff yet</TableCell></TableRow>
+                            <TableRow><TableCell colSpan={15} className="text-center text-sm text-muted-foreground py-8">No staff yet</TableCell></TableRow>
                         )}
                         {staff.map((row) => (
                             <TableRow key={row.id} data-testid={`staff-row-${row.initials}`}>
@@ -141,6 +148,10 @@ export default function Staff() {
                                 <TableCell className="text-center hidden md:table-cell"><Switch checked={row.can_do_days} onCheckedChange={(v) => togglePatch(row, "can_do_days", v)} data-testid={`staff-${row.initials}-day`} /></TableCell>
                                 <TableCell className="text-center hidden md:table-cell"><Switch checked={row.can_do_nights} onCheckedChange={(v) => togglePatch(row, "can_do_nights", v)} data-testid={`staff-${row.initials}-night`} /></TableCell>
                                 <TableCell className="text-center hidden md:table-cell"><Switch checked={row.can_do_sleepover} onCheckedChange={(v) => togglePatch(row, "can_do_sleepover", v)} data-testid={`staff-${row.initials}-sleep`} /></TableCell>
+                                <TableCell className="text-center">
+                                    <PrefSegmented row={row} onChange={(v) => togglePatch(row, "shift_preference", v)} />
+                                </TableCell>
+                                <TableCell className="text-center"><Switch checked={!!row.accepts_overtime} onCheckedChange={(v) => togglePatch(row, "accepts_overtime", v)} data-testid={`staff-${row.initials}-ot`} /></TableCell>
                                 <TableCell className="text-center"><Switch checked={row.active} onCheckedChange={(v) => togglePatch(row, "active", v)} data-testid={`staff-${row.initials}-active`} /></TableCell>
                                 <TableCell className="text-right">
                                     <div className="flex justify-end gap-1">
@@ -268,6 +279,7 @@ function StaffSheet({ open, onOpenChange, value, creating, onSaved }) {
                         <SwitchRow label="Can do Days" checked={form.can_do_days} onChange={(v) => update("can_do_days", v)} testid="sheet-can-day" />
                         <SwitchRow label="Can do Nights" checked={form.can_do_nights} onChange={(v) => update("can_do_nights", v)} testid="sheet-can-night" />
                         <SwitchRow label="Can do Sleepover" checked={form.can_do_sleepover} onChange={(v) => update("can_do_sleepover", v)} testid="sheet-can-sleep" />
+                        <SwitchRow label="Accepts overtime (above contracted hours)" checked={!!form.accepts_overtime} onChange={(v) => update("accepts_overtime", v)} testid="sheet-accepts-ot" />
                     </div>
                     <SwitchRow label="Active" checked={form.active} onChange={(v) => update("active", v)} testid="sheet-active" />
                     <SheetFooter className="pt-4">
@@ -293,6 +305,56 @@ function SwitchRow({ label, checked, onChange, testid }) {
         <div className="flex items-center justify-between p-3 rounded-lg border" style={{ borderColor: "hsl(var(--border))" }}>
             <span className="text-sm">{label}</span>
             <Switch checked={!!checked} onCheckedChange={onChange} data-testid={testid} />
+        </div>
+    );
+}
+
+
+/**
+ * Segmented control for staff shift_preference (Day / Night / No Pref).
+ * Disabled with tooltip when staff can only do one type.
+ */
+function PrefSegmented({ row, onChange }) {
+    const both = !!row.can_do_days && !!row.can_do_nights;
+    const value = row.shift_preference || "no_preference";
+    const options = [
+        { v: "day", label: "D" },
+        { v: "night", label: "N" },
+        { v: "no_preference", label: "—" },
+    ];
+    let lockedTooltip = "";
+    if (!both) {
+        if (row.can_do_days) lockedTooltip = "Auto: Day only";
+        else if (row.can_do_nights) lockedTooltip = "Auto: Night only";
+        else lockedTooltip = "No shift capability";
+    }
+
+    return (
+        <div
+            className="inline-flex rounded-md border overflow-hidden"
+            style={{ borderColor: "hsl(var(--border-strong))", opacity: both ? 1 : 0.5 }}
+            title={lockedTooltip || undefined}
+            data-testid={`staff-${row.initials}-pref`}
+        >
+            {options.map((o) => (
+                <button
+                    key={o.v}
+                    type="button"
+                    disabled={!both}
+                    onClick={() => both && onChange(o.v)}
+                    className="text-[11px] px-2 py-1 transition-colors"
+                    style={{
+                        background: value === o.v
+                            ? "hsl(var(--accent-bright-blue) / .25)"
+                            : "transparent",
+                        fontWeight: value === o.v ? 600 : 400,
+                        cursor: both ? "pointer" : "not-allowed",
+                    }}
+                    data-testid={`staff-${row.initials}-pref-${o.v}`}
+                >
+                    {o.label}
+                </button>
+            ))}
         </div>
     );
 }

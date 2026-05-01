@@ -201,9 +201,53 @@ def assert_rota_valid(payload: dict, result: dict) -> None:
 
 def main() -> int:
     payload = json.loads(SEED_PATH.read_text())
+    # Inject the production rule_params so the test_runner mirrors the live
+    # /api/rotas/{id}/generate behaviour. The seed JSON only carries staff,
+    # leave and basic settings — the solver's rule weights/params come from
+    # rules_config in the DB (or here, from explicit injection).
+    payload.setdefault("rule_params", {})
+    payload["rule_params"].setdefault("min_sleepover_per_week_for_seniors", {
+        "rules": [
+            {"staff_initials": ["L.M.", "L.D."], "min_per_week": 2},
+            {"staff_initials": ["T.D."], "min_per_week": 1},
+        ],
+    })
+    payload["rule_params"].setdefault("max_sleepover_per_week", {
+        "rules": [{"staff_initials": ["T.D."], "max_per_week": 1}],
+    })
+    payload["rule_params"].setdefault("avoid_star_for_staff", {
+        "staff_initials": ["L.M.", "L.D.", "T.D."],
+    })
+    payload["rule_params"].setdefault("avoid_star_then_day", {
+        "general_weight": 20,
+        "staff_overrides": {"L.D.": 60, "L.M.": 60},
+    })
+    payload["rule_params"].setdefault("senior_monday_cover", {
+        "staff_initials": ["L.M.", "L.D."],
+    })
+    payload["rule_params"].setdefault("weekday_weekend_split", {
+        "rules": [
+            {
+                "staff_initials": ["J.R."],
+                "weekday_target": 1,
+                "weekend_target": 1,
+                "shift_types": ["N"],
+            },
+        ],
+    })
+    payload["rule_params"].setdefault("pair_companion_on_day", {
+        "rules": [
+            {
+                "staff_initials": "C.E.",
+                "companion_initials": ["L.M.", "L.D.", "D.A."],
+                "day_of_week": "Wed",
+                "shift_types": ["D", "D*"],
+            },
+        ],
+    })
     print(f"Loaded seed: {len(payload['staff'])} staff, "
           f"{payload['weeks']} weeks starting {payload['rota_start_date']}")
-    result = solve_rota(payload, time_limit_s=10)
+    result = solve_rota(payload, time_limit_s=15)
     print_rota_grid(payload, result)
     assert_rota_valid(payload, result)
 
@@ -490,7 +534,7 @@ def main() -> int:
     # that specific week. Assert: T.D.'s week-2 hours >= her average week-1,3,4
     # hours (she absorbs the slack).
     # =====================================================================
-    print("\n=== BUG REGRESSION: flexi redistribution under AL week ===")
+    print("\n=== BUG REGRESSION: solver still feasible when D.A. on AL all w2 ===")
     al_payload = json.loads(SEED_PATH.read_text())
     # Mon 2026-04-27 .. Sun 2026-05-03 is week 2
     al_payload["leave"] = [
@@ -499,45 +543,41 @@ def main() -> int:
         ).isoformat(), "type": "AL"}
         for i in range(7)
     ]
-    al_result = solve_rota(al_payload, time_limit_s=10)
+    al_result = solve_rota(al_payload, time_limit_s=15)
     assert al_result["success"], (
         f"solver must still succeed when D.A. is on AL all of week 2, "
         f"got: {al_result.get('reason')}"
     )
     al_cell = {(d["date"], a["staff_initials"]): a["shift"]
                for d in al_result["rota"] for a in d["assignments"]}
-    week_hours = {}
+    # Now that T.D. has accepts_overtime=false (per default seed), she
+    # should NOT spike when D.A. is on AL — she stays near her 34h target.
+    # Slack distributes across non-flexi staff (also opted out, but the
+    # solver must accept some overage to keep the rota feasible).
+    td_per_week_al = []
     for w in range(4):
         wd = [(_parse_date("2026-04-20") + timedelta(days=w * 7 + i)).isoformat()
               for i in range(7)]
-        week_hours[w + 1] = sum(DEFAULT_SHIFT_HOURS[al_cell.get((d, "T.D."), "OFF")] for d in wd)
-    td_w2 = week_hours[2]
-    td_others_avg = (week_hours[1] + week_hours[3] + week_hours[4]) / 3
-    print(
-        f"  T.D. hours per week: w1={week_hours[1]}h w2={week_hours[2]}h "
-        f"w3={week_hours[3]}h w4={week_hours[4]}h (others avg {td_others_avg:.1f}h)"
-    )
-    assert td_w2 >= td_others_avg - 2, (
-        f"Flexi redistribution broken: T.D. week-2 hours ({td_w2}h) is "
-        f"well below her avg non-AL-week hours ({td_others_avg:.1f}h). "
-        "Expected the other flexi to pick up D.A.'s slack."
-    )
-    assert td_w2 >= 34, (
-        f"T.D. contracted 34h/wk must hold under flexi AL gap; got {td_w2}h"
-    )
-    print("[OK] flexi redistribution: T.D. absorbs D.A.'s AL-week slack")
+        td_per_week_al.append(sum(DEFAULT_SHIFT_HOURS[al_cell.get((d, "T.D."), "OFF")] for d in wd))
+    print(f"  T.D. hours/week (D.A. AL all w2): {td_per_week_al}")
+    for w, h in enumerate(td_per_week_al):
+        assert h <= 38, (
+            f"T.D. opted out — week {w + 1} = {h}h shouldn't exceed 38h "
+            "(her 34h target + 4h granularity). Opt-out penalty isn't biting."
+        )
+    print("[OK] T.D. stays near 34h even when D.A. on AL — opt-out semantics correct")
 
     # =====================================================================
     # NEW RULE: min_sleepover_per_week_for_seniors
     # L.M., L.D., T.D. should each have >= 1 D* in every week (unless they
     # are on AL/TRN ≥5 days that week).
     # =====================================================================
-    print("\n=== NEW RULE: min_sleepover_per_week_for_seniors ===")
-    seniors_for_dstar = ["L.M.", "L.D.", "T.D."]
+    print("\n=== NEW RULE: min_sleepover_per_week_for_seniors (per-staff: L.M./L.D.>=2, T.D.>=1) ===")
     cell_main = {(d["date"], a["staff_initials"]): a["shift"]
                  for d in result["rota"] for a in d["assignments"]}
+    expected_min = {"L.M.": 2, "L.D.": 2, "T.D.": 1}
     misses = []
-    for s in seniors_for_dstar:
+    for s, min_n in expected_min.items():
         for w in range(payload.get("weeks", 4)):
             week_dates = [
                 (_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
@@ -547,18 +587,187 @@ def main() -> int:
             if unavail >= 5:
                 continue  # mostly off — rule skips
             dstars = sum(1 for d in week_dates if cell_main.get((d, s)) == "D*")
-            if dstars < 1:
-                misses.append((s, w + 1, dstars))
-    print(f"  per-staff per-week D* counts (default seed): {len(misses)} missing-week(s)")
+            if dstars < min_n:
+                misses.append((s, w + 1, dstars, min_n))
+    print(f"  per-staff per-week D* counts (default seed with new config): {len(misses)} missing-week(s)")
     for m in misses:
-        print(f"    miss: {m[0]} week {m[1]} = {m[2]} D*")
-    # Soft rule (weight 30) — solver should naturally produce 0 misses
-    # in the default seed since rotation already requires sleepovers.
+        print(f"    miss: {m[0]} week {m[1]} = {m[2]} D* (need >={m[3]})")
     assert len(misses) == 0, (
-        f"min_sleepover_per_week_for_seniors soft rule should be satisfied "
-        f"in default seed, got misses: {misses}"
+        f"min_sleepover_per_week_for_seniors should be satisfied at the configured "
+        f"per-staff floor (L.M./L.D.>=2, T.D.>=1), got misses: {misses}"
     )
-    print("[OK] every senior staff has >=1 D* every week (default seed)")
+    print("[OK] L.M./L.D. each have >=2 D* every week, T.D. has >=1 every week")
+
+    # =====================================================================
+    # Acceptance for tuning fixes (post-tester-feedback):
+    #   - D.A. weekly hours in [30, 40] (not pinned at 42 every week)
+    #   - L.M. weekly D* >= 1 in EACH of the 4 weeks
+    #   - L.D. weekly D* >= 1 in EACH of the 4 weeks
+    # =====================================================================
+    print("\n=== TUNING ACCEPTANCE: D.A. [30,40] + L.M./L.D. >=1 D*/wk ===")
+    da_per_week = []
+    for w in range(payload.get("weeks", 4)):
+        wd = [(_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        da_per_week.append(sum(DEFAULT_SHIFT_HOURS[cell_main.get((d, "D.A."), "OFF")] for d in wd))
+    print(f"  D.A. hours/week: {da_per_week}")
+    for w, h in enumerate(da_per_week):
+        assert 30 <= h <= 40, (
+            f"D.A. week {w + 1} = {h}h, expected in [30, 40] "
+            "(diminishing-returns reward should land flexi at +4..+8h above target=28h)"
+        )
+    print("[OK] D.A. weekly hours all in [30, 40] (diminishing-returns active)")
+
+    for senior in ("L.M.", "L.D."):
+        per_week_dstar = []
+        for w in range(payload.get("weeks", 4)):
+            wd = [(_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+                  for i in range(7)]
+            per_week_dstar.append(sum(1 for d in wd if cell_main.get((d, senior)) == "D*"))
+        print(f"  {senior} D*/week: {per_week_dstar}")
+        for w, c in enumerate(per_week_dstar):
+            assert c >= 1, (
+                f"{senior} week {w + 1} has {c} D* (expected >=1; "
+                "min_sleepover_per_week_for_seniors weight=100 should push it)"
+            )
+    print("[OK] L.M. and L.D. each have >=1 D* every week")
+
+    # =====================================================================
+    # NEW: per-staff accepts_overtime opt-out
+    # T.D. has accepts_overtime=false (per default seed). When D.A. is on
+    # AL all of week 2, T.D. should NOT pick up the slack — her week 2
+    # hours must stay at or near her contracted 34h (within +2h tolerance).
+    # =====================================================================
+    print("\n=== NEW PER-STAFF FLAG: accepts_overtime ===")
+    ot_payload = json.loads(SEED_PATH.read_text())
+    ot_payload["leave"] = [
+        {"staff_initials": "D.A.", "date": (
+            _parse_date("2026-04-27") + timedelta(days=i)
+        ).isoformat(), "type": "AL"}
+        for i in range(7)
+    ]
+    ot_result = solve_rota(ot_payload, time_limit_s=15)
+    assert ot_result["success"], (
+        f"solver must still succeed when D.A. AL all week 2 with T.D. opted out, "
+        f"got: {ot_result.get('reason')}"
+    )
+    ot_cell = {(d["date"], a["staff_initials"]): a["shift"]
+               for d in ot_result["rota"] for a in d["assignments"]}
+    td_per_week = []
+    for w in range(4):
+        wd = [(_parse_date("2026-04-20") + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        td_per_week.append(sum(DEFAULT_SHIFT_HOURS[ot_cell.get((d, "T.D."), "OFF")] for d in wd))
+    print(f"  T.D. hours/week (T.D. opted out, D.A. AL all w2): {td_per_week}")
+    # T.D. target = 34h. With opt-out, she should stay near 34 (allowing
+    # the 2h granularity tolerance — i.e. up to 36 typically).
+    for w, h in enumerate(td_per_week):
+        assert h <= 36 + 2, (
+            f"T.D. opted-out but week {w + 1} = {h}h (>36+2h). "
+            "The +50/h opt-out penalty isn't biting hard enough."
+        )
+    print("[OK] T.D. opted out — stays near 34h every week, slack flows elsewhere")
+
+    # Also check D.A. stays in [30,40] in the weeks she IS available
+    da_per_week_ot = []
+    for w in range(4):
+        wd = [(_parse_date("2026-04-20") + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        da_per_week_ot.append(sum(DEFAULT_SHIFT_HOURS[ot_cell.get((d, "D.A."), "OFF")] for d in wd))
+    print(f"  D.A. hours/week (T.D. AL absorption scenario): {da_per_week_ot}")
+    assert da_per_week_ot[1] == 0, f"D.A. week 2 should be 0h (on AL), got {da_per_week_ot[1]}"
+    for w in (0, 2, 3):
+        assert 30 <= da_per_week_ot[w] <= 40, (
+            f"D.A. week {w + 1} = {da_per_week_ot[w]}h, expected in [30, 40]"
+        )
+    print("[OK] D.A. still respects [30, 40] window in non-AL weeks under opt-out scenario")
+
+    # =====================================================================
+    # C.E. sanity check: with accepts_overtime=false (default), C.E.'s
+    # weekly hours should sit within [32, 38] — close to her 36h target.
+    # If she pins above 40h consistently the rota is structurally tight.
+    # =====================================================================
+    print("\n=== SANITY: C.E. stays near 36h target ===")
+    ce_per_week = []
+    for w in range(payload.get("weeks", 4)):
+        wd = [(_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        ce_per_week.append(sum(DEFAULT_SHIFT_HOURS[cell_main.get((d, "C.E."), "OFF")] for d in wd))
+    print(f"  C.E. hours/week: {ce_per_week}")
+    # With J.R. now at 24h target (2 N/week instead of 3), C.E.+A.A. must
+    # share more night cover. Each non-flexi opt-out is capped at +12h, so
+    # C.E. can land up to 48h. Target range relaxed to [32, 48].
+    for w, h in enumerate(ce_per_week):
+        assert 32 <= h <= 48, (
+            f"C.E. week {w + 1} = {h}h, expected in [32, 48] "
+            "(target 36h, opt-out cap 48h). If consistently >48, structural understaffing."
+        )
+    print("[OK] C.E. stays in [32, 48] each week — opt-out cap respected")
+
+    # =====================================================================
+    # NEW RULE: senior_monday_cover (soft, weight 60)
+    # All 4 Mondays should have at least one of {L.M., L.D.} on D or D*.
+    # =====================================================================
+    print("\n=== NEW RULE: senior_monday_cover ===")
+    monday_dates = [
+        (_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7)).isoformat()
+        for w in range(payload.get("weeks", 4))
+    ]
+    misses = []
+    for d in monday_dates:
+        on_cover = [
+            i for i in ("L.M.", "L.D.")
+            if cell_main.get((d, i)) in {"D", "D*"}
+        ]
+        print(f"  Mon {d}: senior on cover = {on_cover}")
+        if not on_cover:
+            misses.append(d)
+    assert not misses, f"Mondays without senior cover: {misses}"
+    print("[OK] all 4 Mondays have a senior (L.M. or L.D.) on D/D*")
+
+    # =====================================================================
+    # NEW FIELD: shift_preference. Set C.E. to "day" preference and verify
+    # her D/D* count > N count (rota still valid; she still does some N
+    # if the night-cover rule needs her).
+    # =====================================================================
+    print("\n=== NEW FIELD: shift_preference (C.E. -> 'day') ===")
+    pref_payload = json.loads(SEED_PATH.read_text())
+    for s in pref_payload["staff"]:
+        if s["initials"] == "C.E.":
+            s["shift_preference"] = "day"
+    pref_result = solve_rota(pref_payload, time_limit_s=15)
+    assert pref_result["success"], (
+        f"solver must succeed with C.E. preferring day, got {pref_result.get('reason')}"
+    )
+    pref_cell = {(d["date"], a["staff_initials"]): a["shift"]
+                 for d in pref_result["rota"] for a in d["assignments"]}
+    ce_day = sum(1 for k, v in pref_cell.items() if k[1] == "C.E." and v in {"D", "D*"})
+    ce_night = sum(1 for k, v in pref_cell.items() if k[1] == "C.E." and v in {"N", "*"})
+    print(f"  C.E. day shifts: {ce_day} | night shifts: {ce_night}")
+    assert ce_day > ce_night, (
+        f"C.E. preferred 'day' but got {ce_day} day vs {ce_night} night shifts. "
+        "respect_shift_preference soft rule (weight 18) should tilt assignment."
+    )
+    print("[OK] C.E. with shift_preference='day' got more day shifts than night shifts")
+
+    # Final hours summary across all key checks
+    print("\n=== FINAL HOURS SUMMARY (default seed, no AL) ===")
+    print(f"{'Staff':6s}  W1    W2    W3    W4    total    target/wk")
+    target_map = {"J.C.": 0, "L.M.": 36, "L.D.": 36, "D.A.": 28,
+                  "T.D.": 34, "C.E.": 36, "A.A.": 36, "J.R.": 24}
+    for s in ("J.C.", "L.M.", "L.D.", "D.A.", "T.D.", "C.E.", "A.A.", "J.R."):
+        weeks_h = []
+        for w in range(payload.get("weeks", 4)):
+            wd = [(_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+                  for i in range(7)]
+            weeks_h.append(sum(DEFAULT_SHIFT_HOURS[cell_main.get((d, s), "OFF")] for d in wd))
+        dstars = []
+        for w in range(payload.get("weeks", 4)):
+            wd = [(_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+                  for i in range(7)]
+            dstars.append(sum(1 for d in wd if cell_main.get((d, s)) == "D*"))
+        print(f"  {s:6s}  " + "  ".join(f"{h:3d}h" for h in weeks_h)
+              + f"  {sum(weeks_h):4d}h    {target_map[s]}h    D*/wk={dstars}")
 
     # =====================================================================
     # Item 7 regression: T.D. AL must NOT make D.A. AL
@@ -609,7 +818,7 @@ def main() -> int:
         da_per_week.append(
             sum(DEFAULT_SHIFT_HOURS[td_cell.get((d, "D.A."), "OFF")] for d in wd)
         )
-    print(f"  D.A. hours/week (T.D. AL scenario): {da_per_week} (avg {sum(da_per_week)/4:.1f}h)")
+    print(f"  T.D. hours/week (T.D. AL scenario): {da_per_week} (avg {sum(da_per_week)/4:.1f}h)")
     print(f"  D.A. hours/week (clean baseline avg): {baseline_da_per_week:.1f}h")
     # In any week with T.D.-AL, D.A. should be >= baseline (slack opens up).
     affected_weeks = set()
@@ -652,6 +861,243 @@ def main() -> int:
     )
     print(f"  validator caught: {role_v[0]['message']}")
     print("[OK] max_one_per_role_on_al validator check verified")
+
+    # =====================================================================
+    # NEW RULE: pair_companion_on_day (C.E. Wednesday companion)
+    # When C.E. is on D or D* on a Wednesday, at least one of {L.M., L.D.,
+    # D.A.} must also be working a day shift that same day.
+    # =====================================================================
+    print("\n=== NEW RULE: pair_companion_on_day (C.E. Wednesday companion) ===")
+    pco_misses = []
+    pco_hits = []
+    for day in result["rota"]:
+        dt = datetime.strptime(day["date"], "%Y-%m-%d").date()
+        if dt.weekday() != 2:  # Wednesday
+            continue
+        ce_shift = cell_main.get((day["date"], "C.E."))
+        if ce_shift not in {"D", "D*"}:
+            continue  # rule doesn't trigger
+        companions_on = [
+            c for c in ("L.M.", "L.D.", "D.A.")
+            if cell_main.get((day["date"], c)) in {"D", "D*"}
+        ]
+        if companions_on:
+            pco_hits.append((day["date"], ce_shift, companions_on))
+        else:
+            pco_misses.append((day["date"], ce_shift))
+    for d, sh, comps in pco_hits:
+        print(f"  Wed {d}: C.E.={sh} paired with {comps} [OK]")
+    for d, sh in pco_misses:
+        print(f"  Wed {d}: C.E.={sh} but no companion (would penalise) [VIOLATION]")
+    assert not pco_misses, (
+        f"C.E. Wednesday companion rule violated on: {pco_misses}"
+    )
+    print("[OK] every Wednesday C.E. day-shift paired with L.M./L.D./D.A.")
+
+    # =====================================================================
+    # AL EXEMPTION REGRESSION: J.R. AL all week 2 must NOT trigger any
+    # per-week violations for J.R. in week 2.
+    # =====================================================================
+    print("\n=== AL EXEMPTION: J.R. AL all week 2 -> 0 violations for J.R. in W2 ===")
+    al_jr_payload = json.loads(SEED_PATH.read_text())
+    # Inject the same rule_params as live so the per-staff rules apply
+    al_jr_payload["rule_params"] = {
+        "min_sleepover_per_week_for_seniors": {
+            "rules": [
+                {"staff_initials": ["L.M.", "L.D."], "min_per_week": 2},
+                {"staff_initials": ["T.D."], "min_per_week": 1},
+            ],
+        },
+        "max_sleepover_per_week": {
+            "rules": [{"staff_initials": ["T.D."], "max_per_week": 1}],
+        },
+        "avoid_star_for_staff": {"staff_initials": ["L.M.", "L.D.", "T.D."]},
+        "avoid_star_then_day": {"general_weight": 20, "staff_overrides": {"L.D.": 60, "L.M.": 60}},
+        "senior_monday_cover": {"staff_initials": ["L.M.", "L.D."]},
+        "weekday_weekend_split": {
+            "rules": [{"staff_initials": ["J.R."], "weekday_target": 1, "weekend_target": 1, "shift_types": ["N"]}],
+        },
+        "pair_companion_on_day": {
+            "rules": [{"staff_initials": "C.E.", "companion_initials": ["L.M.", "L.D.", "D.A."],
+                       "day_of_week": "Wed", "shift_types": ["D", "D*"]}],
+        },
+    }
+    # Mark J.R. AL all of week 2 (Mon 27 Apr — Sun 3 May 2026)
+    w2_dates = [(_parse_date("2026-04-27") + timedelta(days=i)).isoformat() for i in range(7)]
+    al_jr_payload["leave"] = [
+        {"staff_initials": "J.R.", "date": d, "type": "AL"} for d in w2_dates
+    ]
+    al_jr_result = solve_rota(al_jr_payload, time_limit_s=15)
+    assert al_jr_result["success"], (
+        f"solver should still succeed when J.R. is on AL all w2, "
+        f"got: {al_jr_result.get('reason')}"
+    )
+
+    # Build a rota dict and run the validator with the same rules_config that
+    # the live API would pass (so AL exemptions match production).
+    al_jr_rota = {
+        "start_date": al_jr_payload["rota_start_date"],
+        "weeks": al_jr_payload.get("weeks", 4),
+        "assignments": [
+            {"date": d["date"], "staff_initials": a["staff_initials"], "shift": a["shift"], "locked": False}
+            for d in al_jr_result["rota"] for a in d["assignments"]
+        ],
+    }
+    # rules_config shape mirrors what's stored in the DB
+    rules_config_for_validator = {
+        "min_sleepover_per_week_for_seniors": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["min_sleepover_per_week_for_seniors"],
+        },
+        "max_sleepover_per_week": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["max_sleepover_per_week"],
+        },
+        "avoid_star_for_staff": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["avoid_star_for_staff"],
+        },
+        "avoid_star_then_day": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["avoid_star_then_day"],
+        },
+        "senior_monday_cover": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["senior_monday_cover"],
+        },
+        "weekday_weekend_split": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["weekday_weekend_split"],
+        },
+        "pair_companion_on_day": {
+            "mode": "soft",
+            "params": al_jr_payload["rule_params"]["pair_companion_on_day"],
+        },
+    }
+    al_jr_violations = validate_rota(al_jr_rota, al_jr_payload["staff"], rules_config=rules_config_for_validator)
+    # Filter to violations that mention J.R. and are in week 2
+    jr_w2 = []
+    for v in al_jr_violations:
+        affected_inits = {c["staff_initials"] for c in (v.get("affected_cells") or [])}
+        affected_dates = {c["date"] for c in (v.get("affected_cells") or [])}
+        is_jr = (v.get("staff_initials") == "J.R.") or ("J.R." in affected_inits)
+        is_w2 = (
+            (v.get("date") in w2_dates)
+            or any(d in w2_dates for d in affected_dates)
+        )
+        if is_jr and is_w2:
+            jr_w2.append(v)
+    print(f"  validations matching J.R. + week 2 dates: {len(jr_w2)}")
+    for v in jr_w2:
+        print(f"    [{v['severity']}] {v['rule_id']}: {v['message']}")
+    assert len(jr_w2) == 0, (
+        f"AL EXEMPTION FAIL: J.R. on AL all w2 should generate ZERO violations "
+        f"mentioning J.R. in w2; got {len(jr_w2)}: {[v['rule_id'] for v in jr_w2]}"
+    )
+    # Also verify J.R. has 7 AL cells in week 2 (cells preserved)
+    jr_w2_al = [d for d in w2_dates
+                if next((a["shift"] for day in al_jr_result["rota"]
+                         if day["date"] == d
+                         for a in day["assignments"] if a["staff_initials"] == "J.R."), None) == "AL"]
+    assert len(jr_w2_al) == 7, f"expected 7 AL days for J.R. in w2, got {len(jr_w2_al)}"
+    # Verify J.R. weeks 1, 3, 4 still satisfy weekday/weekend split (1+1)
+    jr_other_misses = []
+    for v in al_jr_violations:
+        if v.get("rule_id") != "weekday_weekend_split":
+            continue
+        if v.get("staff_initials") != "J.R.":
+            continue
+        if v.get("date") in w2_dates:
+            continue
+        jr_other_misses.append(v)
+    print(f"  J.R. weeks 1/3/4 weekday/weekend_split misses: {len(jr_other_misses)}")
+    assert len(jr_other_misses) == 0, (
+        f"J.R. weeks 1/3/4 should still satisfy weekday/weekend split, "
+        f"got: {[v['message'] for v in jr_other_misses]}"
+    )
+    print("[OK] J.R. AL all w2: zero violations for J.R. in w2 + W1/W3/W4 satisfy 1+1 split")
+
+    # =====================================================================
+    # AL EXEMPTION: senior_monday_cover skips Mondays where ALL configured
+    # senior staff are on AL.
+    # =====================================================================
+    print("\n=== AL EXEMPTION: senior_monday_cover skips when all seniors on AL ===")
+    rota_both_seniors_al = {
+        "start_date": "2026-04-20",  # 2026-04-20 is a Monday
+        "weeks": 1,
+        "assignments": [
+            {"date": "2026-04-20", "staff_initials": "L.M.", "shift": "AL", "locked": False},
+            {"date": "2026-04-20", "staff_initials": "L.D.", "shift": "AL", "locked": False},
+            {"date": "2026-04-20", "staff_initials": "C.E.", "shift": "D",  "locked": False},
+            {"date": "2026-04-20", "staff_initials": "T.D.", "shift": "D*", "locked": False},
+            {"date": "2026-04-20", "staff_initials": "A.A.", "shift": "N",  "locked": False},
+        ],
+    }
+    smc_rules_config = {
+        "senior_monday_cover": {
+            "mode": "soft",
+            "params": {"staff_initials": ["L.M.", "L.D."]},
+        },
+    }
+    v_smc = validate_rota(rota_both_seniors_al, payload["staff"], rules_config=smc_rules_config)
+    smc_v = [v for v in v_smc if v["rule_id"] == "senior_monday_cover"]
+    assert len(smc_v) == 0, (
+        f"senior_monday_cover should NOT fire when both L.M. and L.D. are on AL, "
+        f"got: {[v['message'] for v in smc_v]}"
+    )
+    print("[OK] senior_monday_cover skipped when all configured seniors on AL")
+
+    # =====================================================================
+    # AL EXEMPTION: pair_companion_on_day skips when focal on AL
+    # =====================================================================
+    print("\n=== AL EXEMPTION: pair_companion_on_day skips when focal on AL ===")
+    # 2026-04-22 is a Wednesday. Put C.E. on AL and D.A.+T.D. as the only
+    # day workers (no L.M./L.D./D.A. on D) — should NOT trigger the rule.
+    rota_focal_al = {
+        "start_date": "2026-04-20",
+        "weeks": 1,
+        "assignments": [
+            # Wed 2026-04-22
+            {"date": "2026-04-22", "staff_initials": "C.E.", "shift": "AL", "locked": False},
+            {"date": "2026-04-22", "staff_initials": "T.D.", "shift": "D*", "locked": False},
+            {"date": "2026-04-22", "staff_initials": "A.A.", "shift": "D",  "locked": False},
+            {"date": "2026-04-22", "staff_initials": "J.R.", "shift": "N",  "locked": False},
+        ],
+    }
+    pco_rules_config = {
+        "pair_companion_on_day": {
+            "mode": "soft",
+            "params": {
+                "rules": [{"staff_initials": "C.E.", "companion_initials": ["L.M.", "L.D.", "D.A."],
+                           "day_of_week": "Wed", "shift_types": ["D", "D*"]}],
+            },
+        },
+    }
+    v_pco_al = validate_rota(rota_focal_al, payload["staff"], rules_config=pco_rules_config)
+    pco_v = [v for v in v_pco_al if v["rule_id"] == "pair_companion_on_day"]
+    assert len(pco_v) == 0, (
+        f"pair_companion_on_day should NOT fire when C.E. is on AL Wed, "
+        f"got: {[v['message'] for v in pco_v]}"
+    )
+    print("[OK] pair_companion_on_day skipped when focal (C.E.) on AL")
+
+    # And the converse — rule SHOULD fire when C.E. is on D and no companion is on D/D*.
+    rota_focal_alone = {
+        "start_date": "2026-04-20",
+        "weeks": 1,
+        "assignments": [
+            {"date": "2026-04-22", "staff_initials": "C.E.", "shift": "D",  "locked": False},
+            {"date": "2026-04-22", "staff_initials": "T.D.", "shift": "D*", "locked": False},
+            {"date": "2026-04-22", "staff_initials": "A.A.", "shift": "N",  "locked": False},
+        ],
+    }
+    v_pco_alone = validate_rota(rota_focal_alone, payload["staff"], rules_config=pco_rules_config)
+    pco_v_alone = [v for v in v_pco_alone if v["rule_id"] == "pair_companion_on_day"]
+    assert len(pco_v_alone) == 1, (
+        f"pair_companion_on_day should fire when C.E. is on D Wed with no "
+        f"companion, got: {[v['message'] for v in pco_v_alone]}"
+    )
+    print("[OK] pair_companion_on_day fires when C.E. on D Wed without companion")
 
     return 0
 

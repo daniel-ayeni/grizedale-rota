@@ -17,7 +17,9 @@
       "can_do_nights": false,
       "can_do_sleepover": false,
       "manager_weekday_admin": true,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "L.M.",
@@ -34,7 +36,9 @@
       "can_do_nights": false,
       "can_do_sleepover": true,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "L.D.",
@@ -51,7 +55,9 @@
       "can_do_nights": false,
       "can_do_sleepover": true,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "D.A.",
@@ -68,7 +74,9 @@
       "can_do_nights": true,
       "can_do_sleepover": true,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": true,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "T.D.",
@@ -85,7 +93,9 @@
       "can_do_nights": false,
       "can_do_sleepover": true,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "C.E.",
@@ -102,7 +112,9 @@
       "can_do_nights": true,
       "can_do_sleepover": true,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "A.A.",
@@ -119,14 +131,16 @@
       "can_do_nights": true,
       "can_do_sleepover": true,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     },
     {
       "initials": "J.R.",
       "full_name": "J.R. (Night Support)",
       "role": "Night Support",
       "gender": "F",
-      "target_weekly_hours": 28,
+      "target_weekly_hours": 24,
       "is_admin_only": false,
       "medication_competent": false,
       "first_aider": false,
@@ -136,7 +150,9 @@
       "can_do_nights": true,
       "can_do_sleepover": false,
       "manager_weekday_admin": false,
-      "preferred_off_days": []
+      "preferred_off_days": [],
+      "accepts_overtime": false,
+      "shift_preference": "no_preference"
     }
   ],
   "leave": [],

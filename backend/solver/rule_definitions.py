@@ -192,14 +192,16 @@ RULES: list[dict] = [
     },
     {
         "id": "min_sleepover_per_week_for_seniors",
-        "name": "Senior / day staff minimum sleepovers per week",
-        "description": "Each listed staff should work at least N D* shifts every week. Soft by default — rotation usually satisfies this naturally. Manager can override by removing the staff from the list or lowering N.",
+        "name": "Minimum D* per week (per-staff)",
+        "description": "Per-staff floor on D* (sleepover-day) shifts each week. Default: L.M./L.D. ≥ 2 (their core weekday rhythm), T.D. ≥ 1. Manager can edit the per-staff minimums via Rules UI. Skips weeks where staff has ≥5 AL/TRN days.",
         "severity_default": "soft",
         "immovable": False,
-        "weight_default": 30,
+        "weight_default": 400,
         "params_default": {
-            "staff_initials": ["L.M.", "L.D.", "T.D."],
-            "min_sleepovers_per_week": 1,
+            "rules": [
+                {"staff_initials": ["L.M.", "L.D."], "min_per_week": 2},
+                {"staff_initials": ["T.D."], "min_per_week": 1},
+            ],
         },
     },
     {
@@ -209,6 +211,113 @@ RULES: list[dict] = [
         "severity_default": "hard",
         "immovable": True,
         "weight_default": 0,
+    },
+    {
+        "id": "senior_monday_cover",
+        "name": "Senior on every Monday",
+        "description": "Each Monday should have at least one senior (default L.M. or L.D.) on a working shift. Soft default with strong weight — manager can flip to Hard for strict enforcement.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 60,
+        "params_default": {
+            "staff_initials": ["L.M.", "L.D."],
+        },
+    },
+    {
+        "id": "respect_shift_preference",
+        "name": "Respect each staff's day/night preference",
+        "description": "Staff who can do BOTH day and night shifts can express a preference. The solver nudges them toward their preferred shift but still uses them for the other when needed for cover or hours.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 80,
+    },
+    {
+        "id": "avoid_star_then_night",
+        "name": "Avoid sleepover-only (*) followed by waking night (N)",
+        "description": "After a `*` shift the staff has spent the night in the home and going straight into a `N` the next day is undesirable. Penalises every (*, N) pair the next day.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 25,
+    },
+    {
+        "id": "avoid_star_then_day",
+        "name": "Avoid sleepover-only (*) followed by day shift (D)",
+        "description": "After `*` the staff has just slept at the home and a D the next day cuts into their rest. Per-staff overrides allow a stronger weight for staff who especially dislike this pattern (e.g. L.D.).",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 20,
+        "params_default": {
+            "general_weight": 20,
+            "staff_overrides": {"L.D.": 60, "L.M.": 60},
+        },
+    },
+    {
+        "id": "avoid_star_for_staff",
+        "name": "Avoid sleepover-only (*) for specific staff",
+        "description": "Listed staff do not like working a bare `*` (sleepover-only, no day shift). They're fine with D or D*, but `*` alone is unwanted. Soft penalty per `*` assigned to them.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 50,
+        "params_default": {
+            "staff_initials": ["L.M.", "L.D.", "T.D."],
+        },
+    },
+    {
+        "id": "max_sleepover_per_week",
+        "name": "Maximum sleepovers (D*) per week (cap)",
+        "description": "For each listed staff, cap the number of D* shifts per week. Soft penalty per D* above the configured maximum. Useful for staff who only want one sleepover-day each week (e.g. T.D. → max 1).",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 80,
+        "params_default": {
+            "rules": [
+                {"staff_initials": ["T.D."], "max_per_week": 1},
+            ],
+        },
+    },
+    {
+        "id": "fair_star_distribution",
+        "name": "Fair distribution of `*` (sleepover-only) shifts",
+        "description": "Spread `*` shifts evenly across eligible staff (those with can_do_sleepover=true, excluding staff on avoid_star_for_staff list). Penalises the spread (max − min) of `*` count per eligible staff over the rota.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 30,
+    },
+    {
+        "id": "weekday_weekend_split",
+        "name": "Weekday / weekend split per week",
+        "description": "Per-staff target count of working shifts on weekdays (Mon-Fri) AND weekend days (Sat-Sun) per week. Useful for staff who prefer e.g. exactly 1 weekday and 1 weekend shift each week (J.R.'s default). Auto-skips a sub-window when 0 days are available (AL / TRN cover the whole sub-window).",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 40,
+        "params_default": {
+            "rules": [
+                {
+                    "staff_initials": ["J.R."],
+                    "weekday_target": 1,
+                    "weekend_target": 1,
+                    "shift_types": ["N"],
+                },
+            ],
+        },
+    },
+    {
+        "id": "pair_companion_on_day",
+        "name": "Pair a focal staff with a companion on a specific weekday",
+        "description": "If the focal staff works a day shift on the configured weekday (e.g. C.E. on Wed), at least one of the listed companions must also be working a day shift that same day. Auto-skips when the focal is on AL/TRN that date or when all companions are on AL/TRN.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 200,
+        "params_default": {
+            "rules": [
+                {
+                    "staff_initials": "C.E.",
+                    "companion_initials": ["L.M.", "L.D.", "D.A."],
+                    "day_of_week": "Wed",
+                    "shift_types": ["D", "D*"],
+                },
+            ],
+        },
     },
 ]
 

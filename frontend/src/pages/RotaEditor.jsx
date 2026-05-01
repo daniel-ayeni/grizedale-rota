@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
 import {
     ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle,
-    AlertCircle, Copy, Save, Sparkles, Loader2,
+    AlertCircle, Copy, Save, Sparkles, Loader2, X, Eraser,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +29,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 import {
-    SHIFT_TYPES, shiftCellClass,
+    SHIFT_GROUPS, shiftCellClass,
     SHIFT_LABEL, parseYmd, addDays, dayLetter, isWeekend, ymd, nextShift,
 } from "@/lib/shifts";
 
@@ -81,6 +81,57 @@ export default function RotaEditor() {
     const [generating, setGenerating] = useState(false);
     const [blockersOpen, setBlockersOpen] = useState(false);
     const [blockers, setBlockers] = useState(null);
+
+    // Multi-cell selection state. `selected` is a Set of cell keys
+    // ("YYYY-MM-DD|INITIALS"). Drag-select state lives in `dragRef`.
+    const [selected, setSelected] = useState(() => new Set());
+    const dragRef = useRef({ active: false, startKey: null });
+    // Bulk-action confirmation modal state
+    const [bulkConfirm, setBulkConfirm] = useState(null);  // { action, cells }
+
+    const clearSelection = useCallback(() => setSelected(new Set()), []);
+    const toggleSelection = useCallback((key, additive) => {
+        setSelected((prev) => {
+            const next = new Set(additive ? prev : []);
+            if (additive && prev.has(key)) {
+                next.delete(key);
+            } else {
+                next.add(key);
+            }
+            return next;
+        });
+    }, []);
+    const replaceSelection = useCallback((keys) => {
+        setSelected(new Set(keys));
+    }, []);
+
+    // Drag-select handlers passed down to cells. Pointer events allow
+    // both mouse & touch.
+    const onCellPointerDown = useCallback((dateStr, init, ev) => {
+        // Plain click on a non-additive (no shift/ctrl) lets the existing
+        // shift-cycle handler run; we only start drag-select on shift-drag
+        // OR ctrl-drag to keep the single-click cycle behaviour intact.
+        if (!ev.shiftKey && !ev.ctrlKey && !ev.metaKey) return;
+        ev.preventDefault();
+        const k = `${dateStr}|${init}`;
+        dragRef.current = { active: true, startKey: k };
+        toggleSelection(k, true);
+    }, [toggleSelection]);
+
+    const onCellPointerEnter = useCallback((dateStr, init) => {
+        if (!dragRef.current.active) return;
+        setSelected((prev) => {
+            const next = new Set(prev);
+            next.add(`${dateStr}|${init}`);
+            return next;
+        });
+    }, []);
+
+    useEffect(() => {
+        const onUp = () => { dragRef.current = { active: false, startKey: null }; };
+        window.addEventListener("pointerup", onUp);
+        return () => window.removeEventListener("pointerup", onUp);
+    }, []);
 
     const generateRota = async () => {
         setGenerating(true);
@@ -246,6 +297,49 @@ export default function RotaEditor() {
         } catch (err) { toast.error(formatApiError(err)); }
     };
 
+    /* Select an entire week's cells (7 days × all staff). Triggered by the
+       "Lock week" chip above each week's M column header. */
+    const selectWeek = useCallback((weekIdx) => {
+        const startDay = weekIdx * 7;
+        const endDay = Math.min(startDay + 7, dateStrs.length);
+        const keys = [];
+        for (let i = startDay; i < endDay; i++) {
+            const ds = dateStrs[i];
+            for (const s of staff) keys.push(`${ds}|${s.initials}`);
+        }
+        replaceSelection(keys);
+        toast.info(`Selected week ${weekIdx + 1} — ${keys.length} cells`);
+    }, [dateStrs, staff, replaceSelection]);
+
+    /* Atomic bulk PATCH. action = "lock" | "unlock" | "clear" */
+    const applyBulkAction = useCallback(async (action) => {
+        const cells = Array.from(selected).map((k) => {
+            const [date, init] = k.split("|");
+            return { date, staff_initials: init };
+        });
+        if (cells.length === 0) return;
+        const updates = cells.map((c) => {
+            if (action === "lock")   return { ...c, locked: true };
+            if (action === "unlock") return { ...c, locked: false };
+            if (action === "clear")  return { ...c, shift: "", locked: false };
+            return c;
+        });
+        const force = action === "unlock" || action === "clear";
+        try {
+            const { data } = await api.patch(`/rotas/${id}/cells`, { updates, force });
+            setViolations(data?.validation_report?.violations || []);
+            await load();
+            const skipped = (data?.skipped_locked || []).length;
+            const applied = data?.applied || 0;
+            toast.success(
+                `${action === "lock" ? "Locked" : action === "unlock" ? "Unlocked" : "Cleared"} `
+                + `${applied} cell${applied === 1 ? "" : "s"}`
+                + (skipped > 0 ? ` (skipped ${skipped} locked)` : "")
+            );
+            clearSelection();
+        } catch (err) { toast.error(formatApiError(err)); }
+    }, [id, selected, clearSelection]);  // eslint-disable-line react-hooks/exhaustive-deps
+
     if (!rota) {
         return <div className="text-sm text-muted-foreground" data-testid="rota-loading">Loading rota…</div>;
     }
@@ -357,12 +451,26 @@ export default function RotaEditor() {
                             const we = isWeekend(d);
                             const isWeekEnd = (i + 1) % 7 === 0 && i < dates.length - 1;
                             const isMedCycle = i === medCycleStartIdx;
+                            const isWeekStart = i % 7 === 0;
+                            const weekIdx = Math.floor(i / 7);
                             return (
                                 <div
                                     key={`dl-${ds}`}
                                     className={`rota-header-day ${we ? "weekend" : ""} ${isWeekEnd ? "week-divider" : ""}`}
                                     data-testid={`grid-dayletter-${ds}`}
+                                    style={isWeekStart ? { position: "relative" } : undefined}
                                 >
+                                    {isWeekStart && (
+                                        <button
+                                            type="button"
+                                            className="week-lock-btn"
+                                            onClick={() => selectWeek(weekIdx)}
+                                            data-testid={`week-select-${weekIdx + 1}`}
+                                            title={`Select all 7 days × ${staff.length} staff in week ${weekIdx + 1}`}
+                                        >
+                                            <Lock className="w-2.5 h-2.5 inline-block mr-0.5" /> W{weekIdx + 1}
+                                        </button>
+                                    )}
                                     {isMedCycle && (
                                         <Tooltip>
                                             <TooltipTrigger asChild>
@@ -438,11 +546,106 @@ export default function RotaEditor() {
                                 onSetOnCall={setOnCall}
                                 violationCellsRef={violationCellsRef}
                                 busyKey={busyKey}
+                                selected={selected}
+                                onPointerDown={onCellPointerDown}
+                                onPointerEnter={onCellPointerEnter}
                             />
                         ))}
                     </div>
                 </div>
             </TooltipProvider>
+
+            {/* Bulk-action toolbar — visible when 1+ cell is selected */}
+            {selected.size > 0 && (
+                <div
+                    className="bulk-action-toolbar"
+                    data-testid="bulk-action-toolbar"
+                    style={{ display: "inline-flex" }}
+                >
+                    <span className="count" data-testid="bulk-count">{selected.size}</span>
+                    <span className="count-staff">cell{selected.size === 1 ? "" : "s"} selected</span>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setBulkConfirm({ action: "lock", cells: selected.size })}
+                        data-testid="bulk-lock-button"
+                    >
+                        <Lock className="w-3.5 h-3.5 mr-1.5" /> Lock
+                    </Button>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setBulkConfirm({ action: "unlock", cells: selected.size })}
+                        data-testid="bulk-unlock-button"
+                    >
+                        <Unlock className="w-3.5 h-3.5 mr-1.5" /> Unlock
+                    </Button>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setBulkConfirm({ action: "clear", cells: selected.size })}
+                        data-testid="bulk-clear-button"
+                    >
+                        <Eraser className="w-3.5 h-3.5 mr-1.5" /> Clear
+                    </Button>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={clearSelection}
+                        title="Deselect all"
+                        data-testid="bulk-deselect-button"
+                    >
+                        <X className="w-3.5 h-3.5" />
+                    </Button>
+                </div>
+            )}
+
+            {/* Bulk-action confirmation modal */}
+            <AlertDialog
+                open={!!bulkConfirm}
+                onOpenChange={(o) => { if (!o) setBulkConfirm(null); }}
+            >
+                <AlertDialogContent data-testid="bulk-confirm-dialog">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>
+                            {bulkConfirm?.action === "lock"   && `Lock ${bulkConfirm.cells} cell${bulkConfirm.cells === 1 ? "" : "s"}?`}
+                            {bulkConfirm?.action === "unlock" && `Unlock ${bulkConfirm.cells} cell${bulkConfirm.cells === 1 ? "" : "s"}?`}
+                            {bulkConfirm?.action === "clear"  && `Clear ${bulkConfirm.cells} cell${bulkConfirm.cells === 1 ? "" : "s"}?`}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {bulkConfirm?.action === "lock"   && "Locked cells are protected from the click-cycle and from being overwritten by 'Generate Rota'. They can still be edited via the right-click popover."}
+                            {bulkConfirm?.action === "unlock" && "Unlocking allows the cells to be modified again, including by the solver during 'Generate Rota'."}
+                            {bulkConfirm?.action === "clear"  && "Sets each selected cell to blank (and unlocks it). The solver may refill these on the next generate."}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel data-testid="bulk-confirm-cancel">Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                const action = bulkConfirm.action;
+                                setBulkConfirm(null);
+                                applyBulkAction(action);
+                            }}
+                            data-testid="bulk-confirm-ok"
+                        >
+                            Confirm
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Validation Issues panel — sits between the grid and the legend strip */}
+            <ValidationIssuesPanel
+                violations={violations}
+                onCellPing={(date, init) => {
+                    const sel = `[data-testid="cell-${date}-${init}"]`;
+                    const el = document.querySelector(sel);
+                    if (!el) return;
+                    el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    el.classList.add("violation-pulse");
+                    setTimeout(() => el.classList.remove("violation-pulse"), 1200);
+                }}
+            />
 
             {/* Legend strip BELOW the grid */}
             <div className="rota-legend-strip" data-testid="rota-legend-strip">
@@ -519,7 +722,7 @@ export default function RotaEditor() {
     );
 }
 
-function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetOnCall, violationCellsRef, busyKey }) {
+function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetOnCall, violationCellsRef, busyKey, selected, onPointerDown, onPointerEnter }) {
     return (
         <>
             <div className="rota-identity-cell" data-testid={`row-label-${s.initials}`}>
@@ -538,8 +741,9 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
                 const soft = violationCellsRef.current.soft.has(k);
                 const isWeekEnd = (i + 1) % 7 === 0 && i < dateStrs.length - 1;
                 const onCall = onCallByDate.get(ds) === s.initials;
+                const isSelected = selected && selected.has(k);
 
-                const cellCls = `${shiftCellClass(shift)} ${locked ? "locked" : ""} ${hard ? "violation-hard" : ""} ${soft && !hard ? "violation-soft" : ""} ${isWeekEnd ? "week-divider" : ""}`;
+                const cellCls = `${shiftCellClass(shift)} ${locked ? "locked" : ""} ${hard ? "violation-hard" : ""} ${soft && !hard ? "violation-soft" : ""} ${isWeekEnd ? "week-divider" : ""} ${isSelected ? "selected" : ""}`;
                 const busy = busyKey === k;
                 const isOnCallEditable = ON_CALL_STAFF.includes(s.initials);
 
@@ -557,6 +761,8 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
                         onSetOnCall={onSetOnCall}
                         isOnCallEditable={isOnCallEditable}
                         busy={busy}
+                        onPointerDown={onPointerDown}
+                        onPointerEnter={onPointerEnter}
                     />
                 );
             })}
@@ -564,7 +770,7 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
     );
 }
 
-function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy }) {
+function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy, onPointerDown, onPointerEnter }) {
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState({ shift, locked, reason: "" });
     useEffect(() => { setDraft({ shift, locked, reason: "" }); }, [shift, locked, dateStr, init]);
@@ -574,14 +780,23 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
         setOpen(false);
     };
 
+    const handleClick = (e) => {
+        // If user is shift/ctrl/meta clicking, this is a multi-select
+        // operation — don't run the shift-cycle handler.
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        onClick();
+    };
+
     return (
         <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
                 <button
                     type="button"
                     className={cls}
-                    onClick={onClick}
+                    onClick={handleClick}
                     onContextMenu={(e) => { e.preventDefault(); setOpen(true); }}
+                    onPointerDown={(e) => onPointerDown && onPointerDown(dateStr, init, e)}
+                    onPointerEnter={() => onPointerEnter && onPointerEnter(dateStr, init)}
                     data-testid={`cell-${dateStr}-${init}`}
                     disabled={busy}
                     title={shift ? SHIFT_LABEL[shift] : ""}
@@ -592,20 +807,28 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
             </PopoverTrigger>
             <PopoverContent className="w-72" align="center" data-testid={`cell-popover-${dateStr}-${init}`}>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">{init} · {dateStr}</div>
-                <div className="grid grid-cols-4 gap-1">
-                    {["", ...SHIFT_TYPES].map((sh) => (
-                        <Button
-                            key={sh || "blank"}
-                            variant={draft.shift === sh ? "default" : "outline"}
-                            size="sm"
-                            className={draft.shift === sh ? "btn-primary" : ""}
-                            onClick={() => setDraft((d) => ({ ...d, shift: sh }))}
-                            data-testid={`cell-popover-shift-${(sh || "blank").replace("*", "star")}`}
-                        >
-                            {SHIFT_LABEL[sh] || "—"}
-                        </Button>
-                    ))}
-                </div>
+                {/* Grouped shift picker — Working / Off / Leave so AL/TRN
+                    are visually demoted to the bottom group and never
+                    surface as the "default" choice. */}
+                {Object.entries(SHIFT_GROUPS).map(([group, options]) => (
+                    <div key={group} className={`shift-popover-group ${group.toLowerCase()}`}>
+                        <div className="shift-popover-group-label">{group}</div>
+                        <div className="grid grid-cols-4 gap-1">
+                            {options.map((sh) => (
+                                <Button
+                                    key={sh || "blank"}
+                                    variant={draft.shift === sh ? "default" : "outline"}
+                                    size="sm"
+                                    className={draft.shift === sh ? "btn-primary" : ""}
+                                    onClick={() => setDraft((d) => ({ ...d, shift: sh }))}
+                                    data-testid={`cell-popover-shift-${(sh || "blank").replace("*", "star")}`}
+                                >
+                                    {SHIFT_LABEL[sh] || "—"}
+                                </Button>
+                            ))}
+                        </div>
+                    </div>
+                ))}
                 <div className="flex items-center justify-between mt-3 p-2 rounded border" style={{ borderColor: "hsl(var(--border))" }}>
                     <Label className="text-sm flex items-center gap-1.5">
                         {draft.locked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
@@ -628,5 +851,82 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
                 <Button className="btn-primary w-full mt-3" onClick={save} data-testid="cell-popover-save">Save</Button>
             </PopoverContent>
         </Popover>
+    );
+}
+
+
+/**
+ * ValidationIssuesPanel — renders all current rule violations for the rota
+ * directly below the grid, above the legend strip. Hidden when 0 issues.
+ *
+ * Rows are sorted hard-first then by date. Each row is clickable: clicking
+ * scrolls to the first affected cell and pulses its border briefly.
+ */
+function ValidationIssuesPanel({ violations, onCellPing }) {
+    const list = Array.isArray(violations) ? violations : [];
+    if (list.length === 0) return null;
+
+    const hardCount = list.filter((v) => v.severity === "hard").length;
+    const softCount = list.length - hardCount;
+
+    const ordered = [...list].sort((a, b) => {
+        const sev = (a.severity === "hard" ? 0 : 1) - (b.severity === "hard" ? 0 : 1);
+        if (sev !== 0) return sev;
+        return (a.date || "").localeCompare(b.date || "");
+    });
+
+    const fmtDate = (iso) => {
+        if (!iso) return "";
+        const d = new Date(iso + "T00:00:00");
+        return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    };
+
+    return (
+        <div className="rota-validation-panel" data-testid="validation-issues-panel">
+            <div className="validation-header">
+                <span className="validation-title">Validation Issues</span>
+                {hardCount > 0 && (
+                    <span className="validation-chip chip-hard" data-testid="validation-hard-chip">
+                        {hardCount} hard error{hardCount === 1 ? "" : "s"}
+                    </span>
+                )}
+                {softCount > 0 && (
+                    <span className="validation-chip chip-soft" data-testid="validation-soft-chip">
+                        {softCount} soft warning{softCount === 1 ? "" : "s"}
+                    </span>
+                )}
+            </div>
+            <ul className="validation-list">
+                {ordered.map((v, idx) => {
+                    const cells = Array.isArray(v.affected_cells) ? v.affected_cells : [];
+                    const inits = Array.from(new Set(cells.map((c) => c.staff_initials).filter(Boolean)));
+                    const firstCell = cells[0];
+                    const onClick = firstCell ? () => onCellPing(firstCell.date, firstCell.staff_initials) : undefined;
+                    return (
+                        <li
+                            key={`${v.rule_id}-${v.date || "none"}-${idx}`}
+                            className={`validation-row sev-${v.severity}`}
+                            onClick={onClick}
+                            role={onClick ? "button" : undefined}
+                            tabIndex={onClick ? 0 : -1}
+                            data-testid={`validation-row-${idx}`}
+                        >
+                            <span className={`validation-sev sev-${v.severity}`} aria-hidden="true">
+                                {v.severity === "hard" ? "●" : "▲"}
+                            </span>
+                            <span className="validation-date">{fmtDate(v.date)}</span>
+                            {inits.length > 0 && (
+                                <span className="validation-staff">
+                                    {inits.map((i) => (
+                                        <span key={i} className="validation-staff-chip">{i}</span>
+                                    ))}
+                                </span>
+                            )}
+                            <span className="validation-message">{v.message}</span>
+                        </li>
+                    );
+                })}
+            </ul>
+        </div>
     );
 }

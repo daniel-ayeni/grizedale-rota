@@ -74,7 +74,18 @@ DEFAULT_WEIGHTS = {
     "senior_weekend_cover": 5_000,       # only used if rule is "soft"
     "senior_weekend_rotation_nudge": 30, # reward for assigned senior being on D/D* their weekend
     "avoid_pair_seniors": 40,            # penalty per day L.M. + L.D. both on day cover
-    "min_sleepover_per_week_for_seniors": 30,  # penalty per week per listed staff with < min D*
+    "min_sleepover_per_week_for_seniors": 400,  # penalty per missing D* per staff per week
+                                                # (must exceed ~300 = +2h × opt-out(150)/h on
+                                                # the staff being "promoted" to a D*)
+    "senior_monday_cover": 60,                  # penalty per Monday with no senior on shift
+    "respect_shift_preference": 80,             # penalty per off-preference shift
+    "avoid_star_then_night": 25,                # penalty per (*,N) consecutive pair
+    "avoid_star_then_day": 20,                  # general penalty per (*,D) pair (L.D. overridden)
+    "avoid_star_for_staff": 50,                 # penalty per `*` shift for listed staff
+    "max_sleepover_per_week": 80,               # penalty per D* over the per-week cap
+    "fair_star_distribution": 30,               # penalty per unit of (max − min) `*` count across eligibles
+    "weekday_weekend_split": 40,                # penalty per unit of |actual - target| weekday or weekend count
+    "pair_companion_on_day": 200,               # penalty per (focal works alone) day
 }
 
 DEFAULT_RULE_MODES = {
@@ -93,9 +104,30 @@ DEFAULT_RULE_MODES = {
     "senior_weekend_cover": "hard",
     "avoid_pair_seniors": "soft",
     "min_sleepover_per_week_for_seniors": "soft",
+    "senior_monday_cover": "soft",
+    "respect_shift_preference": "soft",
+    "avoid_star_then_night": "soft",
+    "avoid_star_then_day": "soft",
+    "avoid_star_for_staff": "soft",
+    "max_sleepover_per_week": "soft",
+    "fair_star_distribution": "soft",
+    "weekday_weekend_split": "soft",
+    "pair_companion_on_day": "soft",
 }
 
 SENIOR_STAFF = ("L.M.", "L.D.")
+
+DOW_FROM_STR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _normalise_dow(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int) and 0 <= value <= 6:
+        return value
+    if isinstance(value, str):
+        return DOW_FROM_STR.get(value.strip().lower()[:3])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +195,18 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
         forced_cells[(e["staff_initials"], e["date"])] = e.get("type", "AL")
     for e in locked_cells:
         forced_cells[(e["staff_initials"], e["date"])] = e["shift"]
+
+    # ── AL/TRN-aware helpers ──────────────────────────────────────────────
+    # `_unavail` and `_unavail_in_week` answer "is the staff forced unavailable
+    # (AL/TRN) on this date / how many days in this week?" Used by every per-
+    # week / per-day soft rule below to short-circuit so AL doesn't trigger
+    # spurious violations (J.R. on AL all w2 must NOT trip min-hours, weekday/
+    # weekend split, etc.).
+    def _is_forced_unavail(s: str, di: int) -> bool:
+        return forced_cells.get((s, days[di].isoformat())) in {"AL", "TRN"}
+
+    def _unavail_count_in_week(s: str, w: int) -> int:
+        return sum(1 for di in range(w * 7, (w + 1) * 7) if _is_forced_unavail(s, di))
 
     model = cp_model.CpModel()
 
@@ -356,6 +400,12 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
         if target_weekly <= 0:
             continue  # skip admin-only / zero-hour staff
         is_flexi = (ot_mode != "off") and (s in ot_flexi_set)
+        accepts_ot = bool(info.get("accepts_overtime", False))
+        # Per-staff overtime acceptance: if the staff has explicitly opted out
+        # of overtime (accepts_overtime=false), we apply a STRONG soft penalty
+        # for any hour above target — overrides flexi-role auto-detection so
+        # T.D. (Flexi but accepts_overtime=false) does NOT absorb slack.
+        rewards_overtime = is_flexi and accepts_ot
         non_flexi_mode = modes.get("non_flexi_overage", "hard")
         cap_overage_weekly = max(0, ot_weekly_cap - target_weekly)
 
@@ -379,15 +429,50 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             over_w = model.NewIntVar(0, 200, f"hours_over_{s}_w{w}")
             model.Add(actual_w - target_weekly <= over_w)
 
-            if is_flexi:
-                # Split this week's overage into rewardable + above-cap
-                over_reward_w = model.NewIntVar(0, max(cap_overage_weekly, 1), f"ot_reward_{s}_w{w}")
-                over_above_w = model.NewIntVar(0, 200, f"ot_above_{s}_w{w}")
-                model.Add(over_reward_w + over_above_w == over_w)
+            if rewards_overtime:
+                # Diminishing-returns reward curve so flexi don't pin at the
+                # weekly cap (e.g. D.A. at 42h every week). Three brackets:
+                #  bracket 1 (+0..+4h):   reward weight × 1.0   (encourage)
+                #  bracket 2 (+4..+8h):   reward weight × 0.4   (taper)
+                #  beyond +8h:            mild penalty           (discourage)
+                # Plus a hard cap at the weekly_cap (UK WTR 48h default).
+                b1_max = min(4, cap_overage_weekly)
+                b2_max = min(4, max(0, cap_overage_weekly - 4))
+                b1 = model.NewIntVar(0, max(b1_max, 1), f"flexi_b1_{s}_w{w}")
+                b2 = model.NewIntVar(0, max(b2_max, 1), f"flexi_b2_{s}_w{w}")
+                b3 = model.NewIntVar(0, 200, f"flexi_b3_{s}_w{w}")
+                model.Add(b1 + b2 + b3 == over_w)
+                if b1_max > 0:
+                    model.Add(b1 <= b1_max)
+                else:
+                    model.Add(b1 == 0)
+                if b2_max > 0:
+                    model.Add(b2 <= b2_max)
+                else:
+                    model.Add(b2 == 0)
+                # Strong reward for first 4 hours over target
+                if b1_max > 0:
+                    soft_terms.append(-weights["overtime_prefer_flexi"] * b1)
+                # Weak reward for next 4 hours (40% of base)
+                if b2_max > 0:
+                    soft_terms.append(-int(weights["overtime_prefer_flexi"] * 0.4) * b2)
+                # Beyond +8h: STRONG penalty (200/h) — exceeds opt-out
+                # alternative cost (150/h) so the solver pushes slack onto
+                # opt-out staff before letting D.A. blow past +8h.
+                soft_terms.append((weights["non_flexi_overage"] * 4) * b3)
+                # Hard ceiling at the weekly cap (e.g. 48h)
                 if cap_overage_weekly > 0:
-                    soft_terms.append(-weights["overtime_prefer_flexi"] * over_reward_w)
-                # Above 48h/week: strong penalty same as non-flexi
-                soft_terms.append(weights["non_flexi_overage"] * over_above_w)
+                    model.Add(over_w <= cap_overage_weekly)
+            elif not accepts_ot:
+                # Staff explicitly opted out of overtime — hard cap at +12h
+                # above target keeps the rota feasible under multi-day
+                # Flexi AL scenarios while preventing the worst-case "T.D.
+                # gets 62h alone" pin. The strong soft penalty (150/h)
+                # discourages any overage. Note: tighter caps (e.g. +8)
+                # were tried but caused INFEASIBLE under D.A. AL all w2.
+                model.Add(over_w <= 12)
+                soft_terms.append(weights["non_flexi_overage"] * over_w)
+                soft_terms.append(100 * over_w)
             else:
                 # Non-flexi — per-week overage
                 if non_flexi_mode == "hard":
@@ -521,8 +606,13 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     if senior_mode != "off" and present_seniors:
         for di, dt in enumerate(days):
             if dt.weekday() >= 5:  # Sat=5, Sun=6
+                # AL exemption: if BOTH seniors are forced unavailable that
+                # day there is no valid solution to the rule — skip entirely.
+                avail_seniors = [sr for sr in present_seniors if not _is_forced_unavail(sr, di)]
+                if not avail_seniors:
+                    continue
                 cover_sum = sum(
-                    x[sr][di]["D"] + x[sr][di]["D*"] for sr in present_seniors
+                    x[sr][di]["D"] + x[sr][di]["D*"] for sr in avail_seniors
                 )
                 if senior_mode == "hard":
                     model.Add(cover_sum >= 1)
@@ -575,47 +665,333 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                 soft_terms.append(weights["avoid_pair_seniors"] * both)
 
     # -----------------------------------------------------------------
-    # min_sleepover_per_week_for_seniors: each listed staff should have
-    # >= N D* shifts per week. Soft by default. Skips weeks where the
-    # staff is fully on AL/TRN (≥5 days), since no D* is physically
-    # possible in that case.
+    # min_sleepover_per_week_for_seniors: per-staff floor on D* count.
+    # New params shape: {rules: [{staff_initials: [...], min_per_week: N}, ...]}
+    # Penalty is PROPORTIONAL (per missing D*) so the solver is pushed
+    # past min=1 toward min=2 when configured. Skips weeks where the
+    # staff has ≥5 AL/TRN days (unavailable).
     # -----------------------------------------------------------------
     msl_mode = modes.get("min_sleepover_per_week_for_seniors", "soft")
     if msl_mode != "off":
         msl_params = rule_params.get("min_sleepover_per_week_for_seniors") or {}
-        msl_staff = [s for s in (msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
-                     if s in staff_by]
-        msl_min = max(0, int(msl_params.get("min_sleepovers_per_week", 1)))
-        if msl_min > 0 and msl_staff:
-            for s in msl_staff:
+        # Backwards-compat: old shape {staff_initials, min_sleepovers_per_week}.
+        if "rules" in msl_params:
+            msl_rules = msl_params.get("rules") or []
+        else:
+            msl_rules = [{
+                "staff_initials": msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."],
+                "min_per_week": msl_params.get("min_sleepovers_per_week", 1),
+            }]
+        for rule_entry in msl_rules:
+            min_n = max(0, int(rule_entry.get("min_per_week", 1)))
+            if min_n <= 0:
+                continue
+            entry_staff = [s for s in (rule_entry.get("staff_initials") or [])
+                           if s in staff_by]
+            for s in entry_staff:
                 for w in range(weeks):
                     week_idx = range(w * 7, (w + 1) * 7)
                     dstar_w = sum(x[s][di]["D*"] for di in week_idx)
-                    # Count AL+TRN to skip weeks where the staff is unavailable.
-                    unavail_w = sum(x[s][di]["AL"] + x[s][di]["TRN"] for di in week_idx)
+                    # AL-aware scaling. We use FORCED unavail (AL/TRN locks)
+                    # rather than CP-SAT `AL`/`TRN` variables because forced
+                    # cells are deterministic at model-build time — using
+                    # variable AL counts would let the solver pretend a staff
+                    # is on AL to dodge the rule (it can't, because AL is
+                    # constrained to forced-only, but using forced counts is
+                    # cleaner and matches the validator).
+                    forced_unavail = _unavail_count_in_week(s, w)
+                    # Skip entirely when staff has >=3 AL/TRN days that week
+                    # (matches user spec: "AL is a clean break").
+                    if forced_unavail >= 3:
+                        continue
+                    # Scale: each pair of unavailable days knocks 1 off the
+                    # required min (rough heuristic per user spec).
+                    eff_min = max(0, min_n - (forced_unavail // 2))
+                    if eff_min <= 0:
+                        continue
                     if msl_mode == "hard":
-                        # hard: dstar_w + (unavail_w >= 5 ? large : 0) >= msl_min.
-                        # Use an indicator for "mostly unavailable".
-                        mostly_off = model.NewBoolVar(f"msl_off_{s}_w{w}")
-                        model.Add(unavail_w >= 5).OnlyEnforceIf(mostly_off)
-                        model.Add(unavail_w <= 4).OnlyEnforceIf(mostly_off.Not())
-                        # When NOT mostly_off, require dstar_w >= msl_min
-                        model.Add(dstar_w >= msl_min).OnlyEnforceIf(mostly_off.Not())
+                        model.Add(dstar_w >= eff_min)
+                    else:
+                        # Soft: proportional penalty per missing D*.
+                        short_raw = model.NewIntVar(0, eff_min, f"msl_short_{s}_w{w}_{eff_min}")
+                        model.Add(short_raw + dstar_w >= eff_min)
+                        soft_terms.append(weights["min_sleepover_per_week_for_seniors"] * short_raw)
+
+    # -----------------------------------------------------------------
+    # senior_monday_cover: each Monday should have at least one of the
+    # configured senior staff on a working shift (D or D*). Soft default.
+    # -----------------------------------------------------------------
+    smc_mode = modes.get("senior_monday_cover", "soft")
+    if smc_mode != "off":
+        smc_params = rule_params.get("senior_monday_cover") or {}
+        smc_staff = [s for s in (smc_params.get("staff_initials") or ["L.M.", "L.D."])
+                     if s in staff_by]
+        if smc_staff:
+            for di, dt in enumerate(days):
+                if dt.weekday() == 0:  # Monday
+                    # AL exemption: skip entirely when all configured senior
+                    # staff are forced unavailable that Monday.
+                    avail_smc = [s for s in smc_staff if not _is_forced_unavail(s, di)]
+                    if not avail_smc:
+                        continue
+                    cover_sum = sum(
+                        x[s][di]["D"] + x[s][di]["D*"] for s in avail_smc
+                    )
+                    if smc_mode == "hard":
+                        model.Add(cover_sum >= 1)
                     else:  # soft
-                        # penalty = 1 if dstar_w < msl_min AND unavail_w < 5
-                        short = model.NewBoolVar(f"msl_short_{s}_w{w}")
-                        available = model.NewBoolVar(f"msl_avail_{s}_w{w}")
-                        # available = (unavail_w <= 4)
-                        model.Add(unavail_w <= 4).OnlyEnforceIf(available)
-                        model.Add(unavail_w >= 5).OnlyEnforceIf(available.Not())
-                        # not_enough = (dstar_w < msl_min)
-                        not_enough = model.NewBoolVar(f"msl_ne_{s}_w{w}")
-                        model.Add(dstar_w <= msl_min - 1).OnlyEnforceIf(not_enough)
-                        model.Add(dstar_w >= msl_min).OnlyEnforceIf(not_enough.Not())
-                        # short = available AND not_enough
-                        model.AddBoolAnd([available, not_enough]).OnlyEnforceIf(short)
-                        model.AddBoolOr([available.Not(), not_enough.Not()]).OnlyEnforceIf(short.Not())
-                        soft_terms.append(weights["min_sleepover_per_week_for_seniors"] * short)
+                        miss = model.NewBoolVar(f"smc_miss_{di}")
+                        model.Add(cover_sum == 0).OnlyEnforceIf(miss)
+                        model.Add(cover_sum >= 1).OnlyEnforceIf(miss.Not())
+                        soft_terms.append(weights["senior_monday_cover"] * miss)
+
+    # -----------------------------------------------------------------
+    # respect_shift_preference: per-staff nudge toward preferred shift type.
+    # Only applies to staff who can do BOTH days AND nights (else preference
+    # is irrelevant). "day" preference penalises N and *; "night" preference
+    # penalises D and D*. "no_preference" → no penalty.
+    # -----------------------------------------------------------------
+    rsp_mode = modes.get("respect_shift_preference", "soft")
+    if rsp_mode != "off":
+        for s in staff_inits:
+            info = staff_by[s]
+            if not (info.get("can_do_days") and info.get("can_do_nights")):
+                continue  # not dual-capable → preference is moot
+            pref = (info.get("shift_preference") or "no_preference").lower()
+            if pref not in {"day", "night"}:
+                continue
+            penalised = {"N", "*"} if pref == "day" else {"D", "D*"}
+            for di in range(n_days):
+                for shift in penalised:
+                    if rsp_mode == "hard":
+                        # Hard mode forbids the off-preference shift entirely
+                        # (rare — usually soft).
+                        model.Add(x[s][di][shift] == 0)
+                    else:
+                        soft_terms.append(weights["respect_shift_preference"] * x[s][di][shift])
+
+    # -----------------------------------------------------------------
+    # avoid_star_then_night & avoid_star_then_day: penalise consecutive
+    # *→N and *→D patterns. *→D has per-staff override weights (e.g.
+    # L.D. has weight 60 vs general 20).
+    # -----------------------------------------------------------------
+    asn_mode = modes.get("avoid_star_then_night", "soft")
+    asd_mode = modes.get("avoid_star_then_day", "soft")
+    if asn_mode != "off" or asd_mode != "off":
+        asd_params = rule_params.get("avoid_star_then_day") or {}
+        asd_general = int(asd_params.get("general_weight", weights["avoid_star_then_day"]))
+        asd_overrides = asd_params.get("staff_overrides") or {"L.D.": 60, "L.M.": 60}
+        for s in staff_inits:
+            for di in range(n_days - 1):
+                # *→N
+                if asn_mode != "off":
+                    pair_n = model.NewBoolVar(f"asn_{s}_{di}")
+                    model.AddBoolAnd([x[s][di]["*"], x[s][di + 1]["N"]]).OnlyEnforceIf(pair_n)
+                    model.AddBoolOr([x[s][di]["*"].Not(), x[s][di + 1]["N"].Not()]).OnlyEnforceIf(pair_n.Not())
+                    if asn_mode == "hard":
+                        model.Add(pair_n == 0)
+                    else:
+                        soft_terms.append(weights["avoid_star_then_night"] * pair_n)
+                # *→D
+                if asd_mode != "off":
+                    pair_d = model.NewBoolVar(f"asd_{s}_{di}")
+                    model.AddBoolAnd([x[s][di]["*"], x[s][di + 1]["D"]]).OnlyEnforceIf(pair_d)
+                    model.AddBoolOr([x[s][di]["*"].Not(), x[s][di + 1]["D"].Not()]).OnlyEnforceIf(pair_d.Not())
+                    if asd_mode == "hard":
+                        model.Add(pair_d == 0)
+                    else:
+                        w_for_s = int(asd_overrides.get(s, asd_general))
+                        soft_terms.append(w_for_s * pair_d)
+
+    # -----------------------------------------------------------------
+    # avoid_star_for_staff: listed staff dislike bare `*` (sleepover-only).
+    # Soft penalty per `*` shift assigned to them.
+    # -----------------------------------------------------------------
+    asfs_mode = modes.get("avoid_star_for_staff", "soft")
+    asfs_staff: list[str] = []
+    if asfs_mode != "off":
+        asfs_params = rule_params.get("avoid_star_for_staff") or {}
+        asfs_staff = [s for s in (asfs_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
+                      if s in staff_by]
+        for s in asfs_staff:
+            for di in range(n_days):
+                if asfs_mode == "hard":
+                    model.Add(x[s][di]["*"] == 0)
+                else:
+                    soft_terms.append(weights["avoid_star_for_staff"] * x[s][di]["*"])
+
+    # -----------------------------------------------------------------
+    # max_sleepover_per_week: per-staff cap on D* count per week.
+    # params.rules = [{staff_initials: [...], max_per_week: int}, ...]
+    # -----------------------------------------------------------------
+    msx_mode = modes.get("max_sleepover_per_week", "soft")
+    if msx_mode != "off":
+        msx_params = rule_params.get("max_sleepover_per_week") or {}
+        msx_rules = msx_params.get("rules") or []
+        for rule_entry in msx_rules:
+            cap = rule_entry.get("max_per_week")
+            if cap is None:
+                continue
+            cap = int(cap)
+            entry_staff = [s for s in (rule_entry.get("staff_initials") or [])
+                           if s in staff_by]
+            for s in entry_staff:
+                for w in range(weeks):
+                    week_idx = range(w * 7, (w + 1) * 7)
+                    dstar_w = sum(x[s][di]["D*"] for di in week_idx)
+                    if msx_mode == "hard":
+                        model.Add(dstar_w <= cap)
+                    else:
+                        # over_w_dstar = max(0, dstar_w - cap)
+                        over_dstar = model.NewIntVar(0, 7, f"msx_{s}_w{w}")
+                        model.Add(dstar_w - cap <= over_dstar)
+                        model.Add(over_dstar >= 0)
+                        soft_terms.append(weights["max_sleepover_per_week"] * over_dstar)
+
+    # -----------------------------------------------------------------
+    # fair_star_distribution: spread `*` across eligible staff. Eligible
+    # = can_do_sleepover=true AND NOT in avoid_star_for_staff list.
+    # Penalises (max − min) of star count across eligibles.
+    # -----------------------------------------------------------------
+    fsd_mode = modes.get("fair_star_distribution", "soft")
+    if fsd_mode != "off":
+        avoid_set = set(asfs_staff)  # set in solver above
+        eligible = [
+            s for s in staff_inits
+            if staff_by[s].get("can_do_sleepover") and s not in avoid_set
+        ]
+        if len(eligible) >= 2:
+            star_counts = []
+            for s in eligible:
+                cnt = model.NewIntVar(0, n_days, f"star_count_{s}")
+                model.Add(cnt == sum(x[s][di]["*"] for di in range(n_days)))
+                star_counts.append(cnt)
+            star_max = model.NewIntVar(0, n_days, "star_max")
+            star_min = model.NewIntVar(0, n_days, "star_min")
+            model.AddMaxEquality(star_max, star_counts)
+            model.AddMinEquality(star_min, star_counts)
+            spread = model.NewIntVar(0, n_days, "star_spread")
+            model.Add(spread == star_max - star_min)
+            soft_terms.append(weights["fair_star_distribution"] * spread)
+
+    # -----------------------------------------------------------------
+    # weekday_weekend_split: per-staff target count of shift_types on
+    # weekdays (Mon-Fri) AND weekend days (Sat-Sun) per week. Penalty
+    # per unit of |actual − target|. Useful for J.R. who prefers exactly
+    # 1 weekday N + 1 weekend N every week.
+    # -----------------------------------------------------------------
+    wws_mode = modes.get("weekday_weekend_split", "soft")
+    if wws_mode != "off":
+        wws_params = rule_params.get("weekday_weekend_split") or {}
+        for rule_entry in (wws_params.get("rules") or []):
+            wd_target = int(rule_entry.get("weekday_target", 1))
+            we_target = int(rule_entry.get("weekend_target", 1))
+            shift_types = list(rule_entry.get("shift_types") or ["N"])
+            entry_inits = rule_entry.get("staff_initials")
+            # Allow either a string or a list
+            if isinstance(entry_inits, str):
+                entry_staff = [entry_inits] if entry_inits in staff_by else []
+            else:
+                entry_staff = [s for s in (entry_inits or []) if s in staff_by]
+            for s in entry_staff:
+                for w in range(weeks):
+                    weekday_var_expr = []
+                    weekend_var_expr = []
+                    weekday_avail_days = 0
+                    weekend_avail_days = 0
+                    for di in range(w * 7, (w + 1) * 7):
+                        is_weekend = days[di].weekday() >= 5
+                        # AL exemption: skip days where staff is forced
+                        # unavailable. This makes the sub-window's effective
+                        # day-count smaller and we'll skip the whole sub-
+                        # window if zero days remain.
+                        if _is_forced_unavail(s, di):
+                            continue
+                        if is_weekend:
+                            weekend_avail_days += 1
+                        else:
+                            weekday_avail_days += 1
+                        for shift in shift_types:
+                            if is_weekend:
+                                weekend_var_expr.append(x[s][di][shift])
+                            else:
+                                weekday_var_expr.append(x[s][di][shift])
+                    weekday_var = sum(weekday_var_expr) if weekday_var_expr else 0
+                    weekend_var = sum(weekend_var_expr) if weekend_var_expr else 0
+                    # |weekday_var - wd_target| — skipped when no available weekday
+                    if weekday_avail_days > 0 and weekday_var_expr:
+                        wd_diff = model.NewIntVar(0, 10, f"wws_wd_{s}_w{w}")
+                        model.Add(wd_diff >= weekday_var - wd_target)
+                        model.Add(wd_diff >= wd_target - weekday_var)
+                        if wws_mode == "hard":
+                            model.Add(wd_diff == 0)
+                        else:
+                            soft_terms.append(weights["weekday_weekend_split"] * wd_diff)
+                    if weekend_avail_days > 0 and weekend_var_expr:
+                        we_diff = model.NewIntVar(0, 10, f"wws_we_{s}_w{w}")
+                        model.Add(we_diff >= weekend_var - we_target)
+                        model.Add(we_diff >= we_target - weekend_var)
+                        if wws_mode == "hard":
+                            model.Add(we_diff == 0)
+                        else:
+                            soft_terms.append(weights["weekday_weekend_split"] * we_diff)
+
+    # -----------------------------------------------------------------
+    # pair_companion_on_day: if a focal staff is working a day shift on
+    # a configured weekday (e.g. C.E. on Wed), at least one of the listed
+    # companions must also be working a day shift that same day.
+    # AL exemption: skip when focal is forced AL/TRN that day, or when
+    # all companions are forced AL/TRN that day.
+    # -----------------------------------------------------------------
+    pco_mode = modes.get("pair_companion_on_day", "soft")
+    if pco_mode != "off":
+        pco_params = rule_params.get("pair_companion_on_day") or {}
+        pco_rules = pco_params.get("rules") or []
+        for ridx, rule_entry in enumerate(pco_rules):
+            focal = rule_entry.get("staff_initials")
+            if isinstance(focal, list):
+                focal = focal[0] if focal else None
+            if not focal or focal not in staff_by:
+                continue
+            companions = [c for c in (rule_entry.get("companion_initials") or [])
+                          if c in staff_by and c != focal]
+            if not companions:
+                continue
+            target_dow = _normalise_dow(rule_entry.get("day_of_week", "Wed"))
+            if target_dow is None:
+                continue
+            shift_types_in = rule_entry.get("shift_types") or ["D", "D*"]
+            shift_types_set = {sh for sh in shift_types_in if sh in SHIFT_TYPES}
+            if not shift_types_set:
+                continue
+            for di, dt in enumerate(days):
+                if dt.weekday() != target_dow:
+                    continue
+                # AL exemption #1: focal forced unavailable that day.
+                if _is_forced_unavail(focal, di):
+                    continue
+                avail_companions = [c for c in companions if not _is_forced_unavail(c, di)]
+                # AL exemption #2: no available companions to satisfy the rule.
+                if not avail_companions:
+                    continue
+                # focal_works = sum of x[focal][di][shift] over shift_types
+                focal_works = sum(x[focal][di][sh] for sh in shift_types_set)
+                # companion_present = sum of x[c][di][shift] for any c in avail_companions
+                comp_present = sum(
+                    x[c][di][sh] for c in avail_companions for sh in shift_types_set
+                )
+                if pco_mode == "hard":
+                    # focal_works <= 1 (since each staff has one shift), so:
+                    # focal_works (0 or 1) implies comp_present >= 1.
+                    model.Add(comp_present >= focal_works)
+                else:
+                    # Soft: penalty when focal works AND comp_present == 0.
+                    miss = model.NewBoolVar(f"pco_{ridx}_{di}")
+                    # miss = focal_works AND NOT comp_present
+                    model.Add(focal_works >= 1).OnlyEnforceIf(miss)
+                    model.Add(comp_present == 0).OnlyEnforceIf(miss)
+                    model.Add(focal_works + comp_present >= 1).OnlyEnforceIf(miss.Not())
+                    soft_terms.append(weights["pair_companion_on_day"] * miss)
 
     if soft_terms:
         model.Minimize(sum(soft_terms))

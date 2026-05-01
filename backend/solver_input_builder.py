@@ -15,6 +15,8 @@ _STAFF_FIELDS = (
     "can_do_days", "can_do_nights", "can_do_sleepover",
     "manager_weekday_admin",
     "preferred_off_days",
+    "accepts_overtime",
+    "shift_preference",
 )
 
 

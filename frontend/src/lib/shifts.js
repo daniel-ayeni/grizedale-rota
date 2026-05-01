@@ -4,14 +4,28 @@
 
 export const SHIFT_TYPES = ["D", "D*", "N", "*", "OFF", "AL", "TRN"];
 
-// click-cycle order: blank -> D -> D* -> N -> * -> OFF -> AL -> TRN -> blank
-export const CYCLE = ["", "D", "D*", "N", "*", "OFF", "AL", "TRN"];
+/* Click-cycle (single click on a cell):
+   blank -> D -> D* -> N -> * -> blank
+   AL/TRN/OFF are deliberately NOT in the click cycle — those are leave
+   states the manager toggles via the right-click popover, not by mis-clicking.
+   "OFF" is also excluded because blank is the natural "not working" state in
+   the paper rota; OFF is reserved for explicit manager intent (set via popover).
+*/
+export const CYCLE = ["", "D", "D*", "N", "*"];
 
 export function nextShift(current) {
     const idx = CYCLE.indexOf(current ?? "");
-    if (idx < 0) return "D";
+    if (idx < 0) return "D";  // anything not in cycle (OFF/AL/TRN) -> start at D
     return CYCLE[(idx + 1) % CYCLE.length];
 }
+
+/* Popover groupings — Working / Off / Leave. AL/TRN are visually demoted to
+   the "Leave" group so they're never the first option a user sees. */
+export const SHIFT_GROUPS = {
+    Working: ["D", "D*", "N", "*"],
+    Off: ["", "OFF"],
+    Leave: ["AL", "TRN"],
+};
 
 export const SHIFT_LABEL = {
     "": "—",

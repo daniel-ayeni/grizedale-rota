@@ -100,6 +100,15 @@ async def seed_if_empty(db) -> dict:
         logger.info("Migration: set C.E.first_aider=true (was false)")
         summary["migration_ce_fa"] = res.modified_count
 
+    # MIGRATION: J.R. target_weekly_hours 28 → 24 (per user spec)
+    res_jr = await db.staff.update_one(
+        {"initials": "J.R.", "target_weekly_hours": 28},
+        {"$set": {"target_weekly_hours": 24, "updated_at": _now_iso()}},
+    )
+    if res_jr.modified_count > 0:
+        logger.info("Migration: J.R. target_weekly_hours 28 -> 24")
+        summary["migration_jr_target_24h"] = res_jr.modified_count
+
     # MIGRATION: ensure J.R. has can_do_sleepover=false (Phase 2 user feedback)
     res = await db.staff.update_one(
         {"initials": "J.R.", "can_do_sleepover": {"$ne": False}},
@@ -109,12 +118,43 @@ async def seed_if_empty(db) -> dict:
         logger.info("Migration: set J.R.can_do_sleepover=false")
         summary["migration_jr_sleepover"] = res.modified_count
 
+    # MIGRATION: backfill `accepts_overtime` flag — D.A. only opts in by
+    # default (per user); everyone else opts out. Only touches staff that
+    # don't already have the field set so manager edits aren't reverted.
+    res_da = await db.staff.update_one(
+        {"initials": "D.A.", "accepts_overtime": {"$exists": False}},
+        {"$set": {"accepts_overtime": True, "updated_at": _now_iso()}},
+    )
+    res_others = await db.staff.update_many(
+        {"initials": {"$ne": "D.A."}, "accepts_overtime": {"$exists": False}},
+        {"$set": {"accepts_overtime": False, "updated_at": _now_iso()}},
+    )
+    if res_da.modified_count + res_others.modified_count > 0:
+        logger.info(
+            "Migration: backfilled accepts_overtime (D.A.=true, others=false): "
+            "%d D.A. + %d others",
+            res_da.modified_count, res_others.modified_count,
+        )
+        summary["migration_accepts_overtime"] = (
+            res_da.modified_count + res_others.modified_count
+        )
+
+    # MIGRATION: backfill `shift_preference` field — default everyone to
+    # "no_preference". Manager sets explicit prefs from /staff page.
+    res_pref = await db.staff.update_many(
+        {"shift_preference": {"$exists": False}},
+        {"$set": {"shift_preference": "no_preference", "updated_at": _now_iso()}},
+    )
+    if res_pref.modified_count > 0:
+        logger.info("Migration: backfilled shift_preference=no_preference on %d staff", res_pref.modified_count)
+        summary["migration_shift_preference"] = res_pref.modified_count
+
     # MIGRATION: ensure rules_config has overtime_prefer_flexi entry
     rules_doc = await db.rules_config.find_one({}, {"_id": 0})
     if rules_doc:
         rules = rules_doc.get("rules") or {}
         from solver.rule_definitions import RULES_BY_ID
-        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors", "min_sleepover_per_week_for_seniors", "max_one_per_role_on_al"):
+        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors", "min_sleepover_per_week_for_seniors", "max_one_per_role_on_al", "senior_monday_cover", "respect_shift_preference", "avoid_star_then_night", "avoid_star_then_day", "avoid_star_for_staff", "max_sleepover_per_week", "fair_star_distribution", "weekday_weekend_split", "pair_companion_on_day"):
             if rule_id in rules:
                 continue
             r_def = RULES_BY_ID[rule_id]
@@ -139,6 +179,14 @@ async def seed_if_empty(db) -> dict:
             # Previously non_flexi_overage was hard; that caused infeasibility
             # when a Flexi had multi-day AL. Spec is soft (+8h preference).
             ("non_flexi_overage", "mode", "hard", "soft"),
+            # Bump min_sleepover weight from 30 → 100 (legacy session) → 400.
+            # 400 needed so L.D. picks 2 D* (cost 600 overage) over 1 D* +
+            # missing-D* penalty (300 + 400 = 700).
+            ("min_sleepover_per_week_for_seniors", "weight", 30, 400),
+            ("min_sleepover_per_week_for_seniors", "weight", 100, 400),
+            # Bump pair_companion_on_day from initial 50 → 200 so the
+            # C.E. Wednesday companion is reliably honoured by the solver.
+            ("pair_companion_on_day", "weight", 50, 200),
         ]
         for rid, field, old_val, new_val in stale_bumps:
             res = await db.rules_config.update_one(
@@ -148,6 +196,47 @@ async def seed_if_empty(db) -> dict:
             if res.modified_count > 0:
                 logger.info("Migration: bumped rules.%s.%s from %s -> %s", rid, field, old_val, new_val)
                 summary[f"migration_bump_{rid}_{field}"] = 1
+
+        # MIGRATION: convert min_sleepover_per_week_for_seniors from old
+        # shape {staff_initials, min_sleepovers_per_week} to new shape
+        # {rules: [{staff_initials, min_per_week}, ...]}, AND bump
+        # L.M./L.D. min from 1 → 2 (per user spec).
+        msl_entry = (rules_doc.get("rules") or {}).get("min_sleepover_per_week_for_seniors") or {}
+        msl_params = msl_entry.get("params") or {}
+        if "rules" not in msl_params:
+            await db.rules_config.update_one(
+                {},
+                {"$set": {
+                    "rules.min_sleepover_per_week_for_seniors.params": {
+                        "rules": [
+                            {"staff_initials": ["L.M.", "L.D."], "min_per_week": 2},
+                            {"staff_initials": ["T.D."], "min_per_week": 1},
+                        ],
+                    },
+                    "updated_at": _now_iso(),
+                }},
+            )
+            logger.info("Migration: refactored min_sleepover_per_week_for_seniors to per-rule shape (L.M./L.D.=2, T.D.=1)")
+            summary["migration_min_sleepover_refactor"] = 1
+
+        # MIGRATION: extend avoid_star_then_day staff_overrides to include
+        # L.M. (was L.D. only). Only updates if the existing value still
+        # matches the old default — manager edits are preserved.
+        asd_entry = (rules_doc.get("rules") or {}).get("avoid_star_then_day") or {}
+        asd_params = asd_entry.get("params") or {}
+        asd_overrides = asd_params.get("staff_overrides") or {}
+        if asd_overrides == {"L.D.": 60}:
+            await db.rules_config.update_one(
+                {},
+                {"$set": {
+                    "rules.avoid_star_then_day.params.staff_overrides": {
+                        "L.D.": 60, "L.M.": 60,
+                    },
+                    "updated_at": _now_iso(),
+                }},
+            )
+            logger.info("Migration: extended avoid_star_then_day overrides to include L.M.")
+            summary["migration_avoid_star_then_day_lm"] = 1
 
         # MIGRATION: convert legacy overtime_prefer_flexi.params from
         # {preferred_staff_initials} → {applies_to_role, staff_initials_override}

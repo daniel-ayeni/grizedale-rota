@@ -225,15 +225,17 @@ html[data-theme="modern"] .rota-paper-title {
     justify-content: center;
     width: 100%;
     height: 40px;
-    font-family: 'Caveat', 'Patrick Hand', cursive;
-    font-size: 1.4rem;
-    font-weight: 700;
+    /* Paper theme: clearer handwriting font (Patrick Hand replaces Caveat
+       per user feedback — Caveat was hard to read at this size). */
+    font-family: 'Patrick Hand', 'Lora', cursive;
+    font-size: 1.5rem;
+    font-weight: 400;
     border: 1px solid hsl(0 0% 25%);
     background: hsl(0 0% 100%);
     color: hsl(0 0% 12%);
     cursor: pointer;
     user-select: none;
-    transition: filter .12s, transform .12s;
+    transition: filter .12s, transform .12s, box-shadow .15s;
 }
 html[data-theme="modern"] .shift-cell {
     font-family: 'Inter', sans-serif;
@@ -420,6 +422,131 @@ html[data-theme="modern"] .rota-header-date.weekend {
     border-left: 5px solid transparent;
     border-right: 5px solid transparent;
     border-top: 7px solid #A8C5E0;
+}
+
+/* =========================================================
+   Validation Issues panel — sits between rota grid & legend
+   Paper theme: notepad / sticky-note style with subtle warm
+   tint and ruled-line border.
+   Modern theme: clean dark card with bordered rows.
+   ========================================================= */
+.rota-validation-panel {
+    margin: 16px 0 12px;
+    padding: 14px 18px 16px;
+    border-radius: 8px;
+    background: #FFFCF1;
+    border: 1px solid #E0D3A0;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.04), 0 6px 16px rgba(120, 90, 30, 0.08);
+}
+html[data-theme="modern"] .rota-validation-panel {
+    background: hsl(var(--bg-elev));
+    border: 1px solid hsl(var(--border));
+    box-shadow: 0 1px 0 rgba(0,0,0,0.2);
+}
+.validation-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed #D4C079;
+}
+html[data-theme="modern"] .validation-header { border-bottom-color: hsl(var(--border)); }
+.validation-title {
+    font-family: 'Patrick Hand', 'Lora', cursive;
+    font-size: 1.4rem;
+    color: #6B4F0E;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+}
+html[data-theme="modern"] .validation-title {
+    font-family: inherit;
+    font-size: 1rem;
+    color: hsl(var(--fg));
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.validation-chip {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 9px;
+    border-radius: 999px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.validation-chip.chip-hard { background: #FCD9D9; color: #8B1A1A; }
+.validation-chip.chip-soft { background: #FEEFCD; color: #7A5A0E; }
+.validation-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.validation-row {
+    display: grid;
+    grid-template-columns: 16px 140px auto 1fr;
+    column-gap: 10px;
+    padding: 7px 6px;
+    border-bottom: 1px dashed rgba(180, 150, 80, 0.25);
+    align-items: baseline;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.12s ease;
+}
+html[data-theme="modern"] .validation-row { border-bottom: 1px solid hsl(var(--border)); }
+.validation-row:hover { background: rgba(255, 230, 150, 0.35); }
+html[data-theme="modern"] .validation-row:hover { background: hsl(var(--bg)); }
+.validation-row:last-child { border-bottom: none; }
+.validation-sev {
+    font-size: 0.85rem;
+    line-height: 1;
+    text-align: center;
+}
+.validation-sev.sev-hard { color: #B7270D; }
+.validation-sev.sev-soft { color: #C58C0F; }
+.validation-date {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.8rem;
+    color: #4A3D1F;
+    white-space: nowrap;
+}
+html[data-theme="modern"] .validation-date { color: hsl(var(--fg-muted)); }
+.validation-staff {
+    display: inline-flex;
+    gap: 3px;
+    flex-wrap: wrap;
+}
+.validation-staff-chip {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #F1E5BD;
+    color: #5C4A19;
+    border: 1px solid #D4C079;
+}
+html[data-theme="modern"] .validation-staff-chip {
+    background: hsl(var(--bg));
+    color: hsl(var(--fg-muted));
+    border: 1px solid hsl(var(--border));
+}
+.validation-message {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.85rem;
+    color: #2F2510;
+}
+html[data-theme="modern"] .validation-message { color: hsl(var(--fg)); }
+
+/* Cell pulse — applied briefly when a Validation Issues row is clicked */
+.shift-cell.violation-pulse {
+    animation: violation-pulse 1.1s ease;
+}
+@keyframes violation-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(183, 39, 13, 0); }
+    25%, 75% { box-shadow: 0 0 0 6px rgba(183, 39, 13, 0.45); }
 }
 
 /* ===== Left identity cells (peach background, two-line content) ===== */
@@ -660,4 +787,97 @@ html[data-theme="modern"] .login-hero {
 .focus-ring:focus-visible {
     outline: none;
     box-shadow: 0 0 0 3px hsl(var(--ring) / 0.35);
+}
+
+/* =====================================================================
+   Multi-cell selection (drag-select / shift-click) + bulk action toolbar
+   Used on /rotas/:id by the multi-cell-lock UX feature.
+   ===================================================================== */
+.shift-cell.selected {
+    box-shadow: inset 0 0 0 2px hsl(var(--ring)),
+                0 0 0 2px hsl(var(--ring) / 0.35);
+    z-index: 2;
+}
+.shift-cell.selected.violation-hard {
+    box-shadow: inset 0 0 0 2px hsl(var(--accent-red)),
+                0 0 0 2px hsl(var(--ring) / 0.45);
+}
+
+/* "Lock week" buttons: small chain icons sitting just above the M (Monday)
+   column of each week's day-letter row. Floating positioned via CSS only.*/
+.week-lock-btn {
+    position: absolute;
+    top: -9px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: hsl(var(--bg-elev));
+    color: hsl(var(--fg));
+    border: 1px solid hsl(var(--border-strong));
+    border-radius: 999px;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    z-index: 3;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    transition: background-color 0.15s, color 0.15s;
+}
+.week-lock-btn:hover {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-fg));
+    border-color: hsl(var(--primary));
+}
+
+/* Bulk-action toolbar — floats below the rota grid when 1+ cell selected */
+.bulk-action-toolbar {
+    position: sticky;
+    bottom: 16px;
+    left: 0; right: 0;
+    margin: 12px auto 0;
+    background: hsl(var(--bg-elev));
+    border: 1px solid hsl(var(--border-strong));
+    border-radius: 999px;
+    padding: 6px 10px 6px 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 8px 28px -8px rgba(0,0,0,0.25);
+    font-family: 'Inter', sans-serif;
+    font-size: 0.82rem;
+    z-index: 50;
+}
+.bulk-action-toolbar .count {
+    font-weight: 700;
+    color: hsl(var(--primary));
+    margin-right: 4px;
+}
+.bulk-action-toolbar .count-staff {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: hsl(var(--fg-muted));
+}
+
+/* Shift popover groups — Working / Off / Leave labels in the right-click
+   popover so AL/TRN are never the first option a user sees. */
+.shift-popover-group {
+    margin-bottom: 10px;
+}
+.shift-popover-group:last-child { margin-bottom: 0; }
+.shift-popover-group-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: hsl(var(--fg-muted));
+    margin-bottom: 5px;
+    padding-left: 2px;
+}
+.shift-popover-group.leave .shift-popover-group-label {
+    color: hsl(var(--accent-pink));
 }

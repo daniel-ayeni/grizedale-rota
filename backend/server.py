@@ -125,6 +125,8 @@ class StaffIn(BaseModel):
     can_do_sleepover: bool = False
     manager_weekday_admin: bool = False
     preferred_off_days: list[str] = []
+    accepts_overtime: bool = False
+    shift_preference: str = "no_preference"  # "day" | "night" | "no_preference"
     active: bool = True
 
 
@@ -144,6 +146,8 @@ class StaffPatch(BaseModel):
     can_do_sleepover: bool | None = None
     manager_weekday_admin: bool | None = None
     preferred_off_days: list[str] | None = None
+    accepts_overtime: bool | None = None
+    shift_preference: str | None = None
     active: bool | None = None
 
 
@@ -175,6 +179,25 @@ class CellPatch(BaseModel):
     shift: str = ""
     locked: bool | None = None
     reason: str | None = None
+
+
+class CellBulkUpdate(BaseModel):
+    """One entry in a bulk-cell PATCH. Each field is optional so the caller
+    can patch just `locked` (toggle lock without changing shift) or just
+    `shift` (clear/reassign without touching lock)."""
+    date: str
+    staff_initials: str
+    shift: str | None = None
+    locked: bool | None = None
+    reason: str | None = None
+
+
+class CellBulkPatch(BaseModel):
+    updates: list[CellBulkUpdate]
+    # If true, locked cells are allowed to be modified (used by the "Unlock"
+    # bulk action). If false (default), locked cells are skipped silently to
+    # protect manager-locked decisions.
+    force: bool = False
 
 
 class LeaveBulkIn(BaseModel):
@@ -385,6 +408,22 @@ async def update_rules(payload: dict[str, Any], current=Depends(auth_required)):
     return doc
 
 
+@api.post("/rules/reset")
+async def reset_rules(current=Depends(auth_required)):
+    """Reset rules_config to the seed defaults from rule_definitions.py.
+
+    Useful when the manager has misconfigured rule rows and wants to start
+    over without touching anything else (staff, leave, rotas).
+    """
+    from solver.rule_definitions import default_rules_config
+    fresh = default_rules_config()
+    doc = await db.rules_config.find_one_and_update(
+        {}, {"$set": {"rules": fresh, "updated_at": _now()}},
+        return_document=True, projection={"_id": 0}, upsert=True,
+    )
+    return doc
+
+
 @api.get("/settings")
 async def get_settings(current=Depends(auth_required)):
     doc = await db.settings.find_one({}, {"_id": 0})
@@ -580,6 +619,72 @@ async def patch_cell(rota_id: str, patch: CellPatch, current=Depends(auth_requir
     rota["updated_at"] = _now()
     rota["validation_report"] = await _validate_rota_doc(rota)
     return {"cell": new_cell, "validation_report": rota["validation_report"]}
+
+
+@api.patch("/rotas/{rota_id}/cells")
+async def patch_cells_bulk(
+    rota_id: str,
+    patch: CellBulkPatch,
+    current=Depends(auth_required),
+):
+    """Atomic multi-cell update with a single validation pass.
+
+    Used by the multi-select / week-lock UI on /rotas/:id. Each update may
+    contain `shift`, `locked` and/or `reason`. Omitted fields preserve the
+    existing value. Locked cells are skipped unless `force=true` (used by
+    the bulk "Unlock" action).
+    """
+    rota = await _load_rota(rota_id)
+    assignments = list(rota.get("assignments") or [])
+    by_key: dict[tuple[str, str], dict] = {
+        (a["date"], a["staff_initials"]): a for a in assignments
+    }
+
+    applied = 0
+    skipped_locked: list[dict] = []
+    for upd in patch.updates:
+        key = (upd.date, upd.staff_initials)
+        existing = by_key.get(key)
+        # Block edits to locked cells unless the caller is explicitly
+        # unlocking (locked=False) or `force=True` was passed.
+        if existing and existing.get("locked") and not patch.force and upd.locked is not False:
+            skipped_locked.append({"date": upd.date, "staff_initials": upd.staff_initials})
+            continue
+
+        new_shift = upd.shift if upd.shift is not None else (existing or {}).get("shift", "")
+        new_locked = (
+            upd.locked
+            if upd.locked is not None
+            else (existing or {}).get("locked", False)
+        )
+        new_cell = {
+            "date": upd.date,
+            "staff_initials": upd.staff_initials,
+            "shift": new_shift,
+            "locked": bool(new_locked),
+        }
+        # Preserve existing reason unless overridden
+        if upd.reason is not None:
+            new_cell["reason"] = upd.reason
+        elif existing and existing.get("reason"):
+            new_cell["reason"] = existing["reason"]
+
+        by_key[key] = new_cell
+        applied += 1
+
+    new_assignments = list(by_key.values())
+    await db.rotas.update_one(
+        {"id": rota_id},
+        {"$set": {"assignments": new_assignments, "updated_at": _now()}},
+    )
+    rota["assignments"] = new_assignments
+    rota["updated_at"] = _now()
+    rota["validation_report"] = await _validate_rota_doc(rota)
+    return {
+        "applied": applied,
+        "skipped_locked": skipped_locked,
+        "validation_report": rota["validation_report"],
+    }
 
 
 @api.post("/rotas/{rota_id}/validate")
@@ -838,6 +943,9 @@ async def create_leave(payload: LeaveBulkIn, current=Depends(auth_required)):
         try:
             await db.leave.insert_one(doc)
             created.append(_strip_id(doc))
+            logger.info("LEAVE_INSERT staff=%s date=%s type=%s by=%s",
+                        payload.staff_initials, d, payload.type,
+                        (current or {}).get("email", "?"))
         except Exception:
             # Duplicate (staff_initials, date) — update type instead
             await db.leave.update_one(
@@ -849,14 +957,24 @@ async def create_leave(payload: LeaveBulkIn, current=Depends(auth_required)):
             )
             if existing:
                 created.append(existing)
+            logger.info("LEAVE_UPDATE staff=%s date=%s new_type=%s by=%s",
+                        payload.staff_initials, d, payload.type,
+                        (current or {}).get("email", "?"))
     return created
 
 
 @api.delete("/leave/{leave_id}")
 async def delete_leave(leave_id: str, current=Depends(auth_required)):
+    target = await db.leave.find_one({"id": leave_id}, {"_id": 0})
     res = await db.leave.delete_one({"id": leave_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Leave not found")
+    logger.info("LEAVE_DELETE id=%s staff=%s date=%s type=%s by=%s",
+                leave_id,
+                (target or {}).get("staff_initials"),
+                (target or {}).get("date"),
+                (target or {}).get("type"),
+                (current or {}).get("email", "?"))
     return {"success": True}
 
 
