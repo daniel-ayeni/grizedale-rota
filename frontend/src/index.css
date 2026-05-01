@@ -351,19 +351,57 @@ html[data-theme="modern"] .rota-grid > .week-divider {
     border-right: 2px solid hsl(var(--border-strong));
 }
 
-/* ===== Two-row header (day-letter + date-number) ===== */
-/* The corner cells span both header rows visually with same peach colour. */
+/* ===== Three-row header: week-lock + day-letter + date-number =====
+   The week-lock row sits above the day letters and gives each week a
+   prominent chip-button to bulk-select all 7 × N cells in that week. */
 .rota-corner-cell {
     background: hsl(22 86% 75%);
     border: 1px solid hsl(0 0% 25%) !important;
+    /* Span the week-lock row + the day-letter row visually as one merged
+       corner block. The date-number row gets its own bottom corner. */
+    grid-row: span 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: hsl(0 0% 30%);
 }
 html[data-theme="modern"] .rota-corner-cell {
     background: hsl(210 40% 96%);
     border: 1px solid hsl(var(--border)) !important;
+    color: hsl(var(--fg-muted));
 }
 .rota-corner-cell-bottom {
-    /* second-row corner — same colour, hides the inner border */
+    /* Bottom corner — only spans the date-number row. */
+    grid-row: auto;
     border-top: 0 !important;
+}
+
+/* Week-lock header row — one cell per week, spanning 7 day columns. */
+.rota-week-header {
+    grid-column: span 7;
+    background: hsl(22 86% 75%);
+    border-right: 1px solid hsl(0 0% 25%);
+    border-bottom: 1px solid hsl(0 0% 25%);
+    padding: 6px 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.rota-week-header.week-divider {
+    border-right: 3px solid hsl(0 0% 12%);
+}
+html[data-theme="modern"] .rota-week-header {
+    background: hsl(210 40% 96%);
+    border-right: 1px solid hsl(var(--border));
+    border-bottom: 1px solid hsl(var(--border));
+}
+html[data-theme="modern"] .rota-week-header.week-divider {
+    border-right: 2px solid hsl(var(--border-strong));
 }
 
 .rota-header-day, .rota-header-date {
@@ -803,30 +841,56 @@ html[data-theme="modern"] .login-hero {
                 0 0 0 2px hsl(var(--ring) / 0.45);
 }
 
-/* "Lock week" buttons: small chain icons sitting just above the M (Monday)
-   column of each week's day-letter row. Floating positioned via CSS only.*/
+/* "Lock week" buttons: prominent chip in the top header row that
+   selects all cells of a single week. Two visual states:
+   default → inviting outline; active → filled accent (toggle off). */
 .week-lock-btn {
-    position: absolute;
-    top: -9px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: hsl(var(--bg-elev));
-    color: hsl(var(--fg));
-    border: 1px solid hsl(var(--border-strong));
+    background: hsl(0 0% 100%);
+    color: hsl(0 0% 12%);
+    border: 1.5px solid hsl(0 0% 25%);
     border-radius: 999px;
     font-family: 'Inter', sans-serif;
-    font-size: 0.62rem;
+    font-size: 0.72rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 1px 8px;
+    letter-spacing: 0.05em;
+    padding: 5px 14px;
     cursor: pointer;
     white-space: nowrap;
-    z-index: 3;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    transition: background-color 0.15s, color 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    transition: background-color 0.15s, color 0.15s, transform 0.1s, box-shadow 0.15s;
 }
 .week-lock-btn:hover {
+    background: hsl(210 95% 60%);
+    color: hsl(0 0% 100%);
+    border-color: hsl(210 95% 50%);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(33, 113, 226, 0.35);
+}
+.week-lock-btn.active {
+    background: hsl(210 95% 50%);
+    color: hsl(0 0% 100%);
+    border-color: hsl(210 95% 40%);
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+}
+.week-lock-btn.active:hover {
+    background: hsl(210 95% 45%);
+}
+html[data-theme="modern"] .week-lock-btn {
+    background: hsl(var(--bg));
+    color: hsl(var(--fg));
+    border: 1px solid hsl(var(--border-strong));
+}
+html[data-theme="modern"] .week-lock-btn:hover {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-fg));
+    border-color: hsl(var(--primary));
+    box-shadow: 0 3px 10px hsl(var(--primary) / 0.35);
+}
+html[data-theme="modern"] .week-lock-btn.active {
     background: hsl(var(--primary));
     color: hsl(var(--primary-fg));
     border-color: hsl(var(--primary));

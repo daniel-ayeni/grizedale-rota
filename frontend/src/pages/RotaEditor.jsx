@@ -298,7 +298,9 @@ export default function RotaEditor() {
     };
 
     /* Select an entire week's cells (7 days × all staff). Triggered by the
-       "Lock week" chip above each week's M column header. */
+       "Lock week" chip in the top header row. Toggles: clicking the same
+       week's chip again clears the selection so managers can quickly back
+       out of a multi-select without having to find a "deselect" button. */
     const selectWeek = useCallback((weekIdx) => {
         const startDay = weekIdx * 7;
         const endDay = Math.min(startDay + 7, dateStrs.length);
@@ -307,9 +309,42 @@ export default function RotaEditor() {
             const ds = dateStrs[i];
             for (const s of staff) keys.push(`${ds}|${s.initials}`);
         }
+        // Toggle: if the current selection is exactly this week's keys,
+        // clear instead of re-selecting.
+        const isSameWeekSelected =
+            selected.size === keys.length
+            && keys.every((k) => selected.has(k));
+        if (isSameWeekSelected) {
+            clearSelection();
+            return;
+        }
         replaceSelection(keys);
         toast.info(`Selected week ${weekIdx + 1} — ${keys.length} cells`);
-    }, [dateStrs, staff, replaceSelection]);
+    }, [dateStrs, staff, replaceSelection, selected, clearSelection]);
+
+    /* Per-week-selection helper: tells render whether a given week's chip
+       should display the "active" (toggle-off) visual state. */
+    const isWeekFullySelected = useCallback((weekIdx) => {
+        const startDay = weekIdx * 7;
+        const endDay = Math.min(startDay + 7, dateStrs.length);
+        if (selected.size !== (endDay - startDay) * staff.length) return false;
+        for (let i = startDay; i < endDay; i++) {
+            const ds = dateStrs[i];
+            for (const s of staff) {
+                if (!selected.has(`${ds}|${s.initials}`)) return false;
+            }
+        }
+        return true;
+    }, [dateStrs, staff, selected]);
+
+    /* Escape key clears the multi-select. */
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key === "Escape" && selected.size > 0) clearSelection();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [selected.size, clearSelection]);
 
     /* Atomic bulk PATCH. action = "lock" | "unlock" | "clear" */
     const applyBulkAction = useCallback(async (action) => {
@@ -444,33 +479,60 @@ export default function RotaEditor() {
             <TooltipProvider delayDuration={150}>
                 <div className="rota-grid-wrap" data-testid="rota-grid-wrap">
                     <div className="rota-grid" data-testid="rota-grid" data-violation-key={violationKey}>
-                        {/* HEADER ROW 1: top-left corner cell + 28 day-letter cells */}
-                        <div className="rota-corner-cell" data-testid="rota-corner-cell" aria-hidden="true" />
+                        {/* HEADER ROW 1 (NEW): week-lock chip row — one cell
+                            per week spanning 7 day columns, prominent
+                            chip-button to bulk-select all cells in that week.
+                            The corner cell from row 1 is span-3 to occupy
+                            this row + the day-letter + date rows. */}
+                        <div className="rota-corner-cell" data-testid="rota-corner-cell" aria-hidden="true">
+                            Week
+                        </div>
+                        {Array.from({ length: Math.ceil(dates.length / 7) }, (_, w) => {
+                            const startDate = dates[w * 7];
+                            const endDate = dates[Math.min(w * 7 + 6, dates.length - 1)];
+                            const isLastWeek = w === Math.ceil(dates.length / 7) - 1;
+                            const fmt = (d) => `${d.getDate()} ${d.toLocaleString('en-GB', { month: 'short' })}`;
+                            const range = `${fmt(startDate)} – ${fmt(endDate)}`;
+                            const active = isWeekFullySelected(w);
+                            return (
+                                <div
+                                    key={`wh-${w}`}
+                                    className={`rota-week-header ${!isLastWeek ? "week-divider" : ""}`}
+                                >
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <button
+                                                type="button"
+                                                className={`week-lock-btn ${active ? "active" : ""}`}
+                                                onClick={() => selectWeek(w)}
+                                                data-testid={`week-select-${w + 1}`}
+                                                aria-pressed={active}
+                                            >
+                                                <Lock className="w-3.5 h-3.5" /> W{w + 1}
+                                            </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                            {active
+                                                ? `Click to deselect week ${w + 1}`
+                                                : `Select all cells in Week ${w + 1} (${range})`}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </div>
+                            );
+                        })}
+
+                        {/* HEADER ROW 2: 28 day-letter cells (no chips inside; chips moved up) */}
                         {dates.map((d, i) => {
                             const ds = dateStrs[i];
                             const we = isWeekend(d);
                             const isWeekEnd = (i + 1) % 7 === 0 && i < dates.length - 1;
                             const isMedCycle = i === medCycleStartIdx;
-                            const isWeekStart = i % 7 === 0;
-                            const weekIdx = Math.floor(i / 7);
                             return (
                                 <div
                                     key={`dl-${ds}`}
                                     className={`rota-header-day ${we ? "weekend" : ""} ${isWeekEnd ? "week-divider" : ""}`}
                                     data-testid={`grid-dayletter-${ds}`}
-                                    style={isWeekStart ? { position: "relative" } : undefined}
                                 >
-                                    {isWeekStart && (
-                                        <button
-                                            type="button"
-                                            className="week-lock-btn"
-                                            onClick={() => selectWeek(weekIdx)}
-                                            data-testid={`week-select-${weekIdx + 1}`}
-                                            title={`Select all 7 days × ${staff.length} staff in week ${weekIdx + 1}`}
-                                        >
-                                            <Lock className="w-2.5 h-2.5 inline-block mr-0.5" /> W{weekIdx + 1}
-                                        </button>
-                                    )}
                                     {isMedCycle && (
                                         <Tooltip>
                                             <TooltipTrigger asChild>
@@ -763,6 +825,8 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
                         busy={busy}
                         onPointerDown={onPointerDown}
                         onPointerEnter={onPointerEnter}
+                        isSelected={isSelected}
+                        anySelected={selected && selected.size > 0}
                     />
                 );
             })}
@@ -770,7 +834,7 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
     );
 }
 
-function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy, onPointerDown, onPointerEnter }) {
+function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onCall, onSetOnCall, isOnCallEditable, busy, onPointerDown, onPointerEnter, isSelected, anySelected }) {
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState({ shift, locked, reason: "" });
     useEffect(() => { setDraft({ shift, locked, reason: "" }); }, [shift, locked, dateStr, init]);
@@ -784,22 +848,43 @@ function CellWithMenu({ dateStr, init, shift, locked, cls, onClick, onPatch, onC
         // If user is shift/ctrl/meta clicking, this is a multi-select
         // operation — don't run the shift-cycle handler.
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        // While the cell is part of an active multi-select, single-click is
+        // a no-op. Bulk actions (Lock/Unlock/Clear) drive edits in this mode.
+        if (isSelected) return;
         onClick();
     };
 
+    const handleContextMenu = (e) => {
+        e.preventDefault();
+        // Same rule: while in a multi-select, the right-click popover is
+        // disabled to keep the bulk-action toolbar the single source of truth.
+        if (isSelected) return;
+        setOpen(true);
+    };
+
     return (
-        <Popover open={open} onOpenChange={setOpen}>
+        <Popover open={isSelected ? false : open} onOpenChange={(v) => { if (!isSelected) setOpen(v); }}>
             <PopoverTrigger asChild>
                 <button
                     type="button"
                     className={cls}
                     onClick={handleClick}
-                    onContextMenu={(e) => { e.preventDefault(); setOpen(true); }}
-                    onPointerDown={(e) => onPointerDown && onPointerDown(dateStr, init, e)}
+                    onContextMenu={handleContextMenu}
+                    onPointerDown={(e) => {
+                        // While in multi-select, suppress the trigger entirely so
+                        // Radix never opens the popover.
+                        if (isSelected) { e.preventDefault(); e.stopPropagation(); return; }
+                        if (onPointerDown) onPointerDown(dateStr, init, e);
+                    }}
                     onPointerEnter={() => onPointerEnter && onPointerEnter(dateStr, init)}
                     data-testid={`cell-${dateStr}-${init}`}
                     disabled={busy}
-                    title={shift ? SHIFT_LABEL[shift] : ""}
+                    title={
+                        isSelected
+                            ? "Cell is part of a multi-select — use the toolbar below to Lock / Unlock / Clear"
+                            : (shift ? SHIFT_LABEL[shift] : "")
+                    }
+                    aria-disabled={isSelected || busy}
                 >
                     {displayShift(shift)}
                     {onCall && <span className="oncall-chip">on-call</span>}

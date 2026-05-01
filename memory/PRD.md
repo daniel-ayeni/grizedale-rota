@@ -20,6 +20,12 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 ## What's been implemented (latest first)
 
 ### 2026-05-01 — Consolidated batch (this session)
+- **Week-lock UX polish**: dedicated 3rd header row above day-letters with
+  prominent pill-button chips (🔒 W1/W2/W3/W4) per week; Tooltip shows the
+  week's date range; toggle behavior (click same chip twice to deselect);
+  Escape key clears any selection; cells in active selection have popover
+  + click-cycle disabled (bulk toolbar is the single edit channel while
+  multi-selecting).
 - **AL exemption across all per-week / per-day rules**:
   `weekday_weekend_split`, `senior_weekend_cover` (hard), `senior_monday_cover`,
   `min_sleepover_per_week_for_seniors` (5→3 threshold + scaling),
