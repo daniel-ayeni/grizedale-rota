@@ -68,9 +68,12 @@ DEFAULT_WEIGHTS = {
     "avoid_pairs": 30,
     "weekend_fairness": 10,
     "hours_overage": 5,                  # always-on small penalty for over-target (flexi only)
-    "overtime_prefer_flexi": 15,         # reward (negative) for D.A. overtime
+    "overtime_prefer_flexi": 15,         # reward (negative) per hour for flexi overtime
     "non_flexi_overage": 50,             # STRONG penalty for non-flexi over contracted
     "prefer_dstar_over_star": 200,       # penalty per day where * is used instead of D*
+    "senior_weekend_cover": 5_000,       # only used if rule is "soft"
+    "senior_weekend_rotation_nudge": 30, # reward for assigned senior being on D/D* their weekend
+    "avoid_pair_seniors": 40,            # penalty per day L.M. + L.D. both on day cover
 }
 
 DEFAULT_RULE_MODES = {
@@ -86,7 +89,11 @@ DEFAULT_RULE_MODES = {
     "overtime_prefer_flexi": "soft",
     "prefer_dstar_over_star": "soft",
     "non_flexi_overage": "hard",
+    "senior_weekend_cover": "hard",
+    "avoid_pair_seniors": "soft",
 }
+
+SENIOR_STAFF = ("L.M.", "L.D.")
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +319,18 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                 <= 1
             )
 
-    # Contracted hours (>= target*weeks - AL*12 - TRN*8 - 2)
-    # Plus: overtime preference for the flexi staff — soft NEGATIVE coefficient
-    # (reward) for hours above target, capped by weekly_cap (UK WTR default 48h/week).
+    # Contracted hours — PER WEEK (not rota-aggregate) so each week individually
+    # hits the staff's target. This is critical so that when one Flexi is on AL
+    # for a specific week, the OTHER flexi gets loaded UP THAT SPECIFIC WEEK
+    # (instead of the solver spreading the gap across all weeks and leaving
+    # the other flexi under-utilised).
+    #
+    # Per-week formula (for each staff S, each week W):
+    #   actual_hours(S, W) + 12 * AL_days(S, W) + 8 * TRN_days(S, W) + 2
+    #       >= target_weekly_hours(S)
+    # Non-flexi (mode=hard) cap: actual_hours(S, W) <= target_weekly_hours(S) + 8.
+    # Flexi staff get their overtime reward computed PER WEEK too so each week's
+    # slack is distributed to whichever flexi has capacity that specific week.
     ot_params = rule_params.get("overtime_prefer_flexi") or {}
     # Determine flexi staff set:
     #   1. If staff_initials_override is non-empty, use that explicit list
@@ -334,60 +350,52 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
 
     for s in staff_inits:
         info = staff_by[s]
-        target_total = int(info.get("target_weekly_hours", 0)) * weeks
-        if target_total <= 0:
+        target_weekly = int(info.get("target_weekly_hours", 0))
+        if target_weekly <= 0:
             continue  # skip admin-only / zero-hour staff
+        is_flexi = (ot_mode != "off") and (s in ot_flexi_set)
+        non_flexi_mode = modes.get("non_flexi_overage", "hard")
+        cap_overage_weekly = max(0, ot_weekly_cap - target_weekly)
 
-        # Count AL & TRN days for this staff (forced + chosen by solver)
-        al_var = sum(x[s][di]["AL"] for di in range(n_days))
-        trn_var = sum(x[s][di]["TRN"] for di in range(n_days))
-        actual = sum(
-            shift_hours[t] * x[s][di][t] for di in range(n_days) for t in SHIFT_TYPES
-        )
-        # min_required = target_total - 12*AL - 8*TRN - 2
-        # actual + 12*AL + 8*TRN + 2 >= target_total
-        if modes["contracted_hours_min"] == "hard":
-            model.Add(actual + 12 * al_var + 8 * trn_var + 2 >= target_total)
-        elif modes["contracted_hours_min"] == "soft":
-            short = model.NewIntVar(0, 1000, f"hours_short_{s}")
-            model.Add(actual + 12 * al_var + 8 * trn_var + short >= target_total - 2)
-            soft_terms.append(weights["contracted_hours_min"] * short)
+        for w in range(weeks):
+            di_start = w * 7
+            di_end = (w + 1) * 7
+            week_idx = range(di_start, di_end)
+            al_w = sum(x[s][di]["AL"] for di in week_idx)
+            trn_w = sum(x[s][di]["TRN"] for di in week_idx)
+            actual_w = sum(
+                shift_hours[t] * x[s][di][t] for di in week_idx for t in SHIFT_TYPES
+            )
 
-        # Overage int var (penalty differentiated by flexi vs non-flexi)
-        over = model.NewIntVar(0, 1000, f"hours_over_{s}")
-        model.Add(actual - target_total <= over)
+            if modes["contracted_hours_min"] == "hard":
+                model.Add(actual_w + 12 * al_w + 8 * trn_w + 2 >= target_weekly)
+            elif modes["contracted_hours_min"] == "soft":
+                short_w = model.NewIntVar(0, 200, f"hours_short_{s}_w{w}")
+                model.Add(actual_w + 12 * al_w + 8 * trn_w + short_w >= target_weekly - 2)
+                soft_terms.append(weights["contracted_hours_min"] * short_w)
 
-        if ot_mode != "off" and s in ot_flexi_set:
-            # Flexi staff: split `over` into two parts
-            #   - over_rewardable (0..cap_overage)   → REWARDED at -overtime_prefer_flexi
-            #   - over_above_cap  (0..1000)          → STRONG penalty (same as non-flexi)
-            cap_total = ot_weekly_cap * weeks
-            cap_overage = max(0, cap_total - target_total)
-            over_rewardable = model.NewIntVar(0, cap_overage, f"ot_rewardable_{s}")
-            over_above_cap = model.NewIntVar(0, 1000, f"ot_above_cap_{s}")
-            model.Add(over_rewardable + over_above_cap == over)
-            if cap_overage > 0:
-                soft_terms.append(-weights["overtime_prefer_flexi"] * over_rewardable)
-            # Beyond the cap, treat extra hours as strongly penalised as non-flexi
-            soft_terms.append(weights["non_flexi_overage"] * over_above_cap)
-        else:
-            # Non-flexi:
-            #   "hard" mode → strict upper bound actual <= target + 2  (cap)
-            #   "soft" mode → weighted linear overage penalty
-            #   "off"  mode → fall back to small always-on penalty
-            non_flexi_mode = modes.get("non_flexi_overage", "hard")
-            if non_flexi_mode == "hard":
-                # Cap at target_total + 8 — gives the solver enough buffer for
-                # nights-only staff (J.R. has 12h-shift granularity so her
-                # achievable totals are 108, 120, 132... — none fit a tight
-                # +2h or +4h cap). +8h is ~2h/week over 4 weeks, still very
-                # close to "minimum contracted".
-                model.Add(actual <= target_total + 8)
-                soft_terms.append(weights["hours_overage"] * over)
-            elif non_flexi_mode == "soft":
-                soft_terms.append(weights["non_flexi_overage"] * over)
+            over_w = model.NewIntVar(0, 200, f"hours_over_{s}_w{w}")
+            model.Add(actual_w - target_weekly <= over_w)
+
+            if is_flexi:
+                # Split this week's overage into rewardable + above-cap
+                over_reward_w = model.NewIntVar(0, max(cap_overage_weekly, 1), f"ot_reward_{s}_w{w}")
+                over_above_w = model.NewIntVar(0, 200, f"ot_above_{s}_w{w}")
+                model.Add(over_reward_w + over_above_w == over_w)
+                if cap_overage_weekly > 0:
+                    soft_terms.append(-weights["overtime_prefer_flexi"] * over_reward_w)
+                # Above 48h/week: strong penalty same as non-flexi
+                soft_terms.append(weights["non_flexi_overage"] * over_above_w)
             else:
-                soft_terms.append(weights["hours_overage"] * over)
+                # Non-flexi — per-week overage
+                if non_flexi_mode == "hard":
+                    # Per-week cap: actual_w <= target_weekly + 8 (2h/week tolerance).
+                    model.Add(actual_w <= target_weekly + 8)
+                    soft_terms.append(weights["hours_overage"] * over_w)
+                elif non_flexi_mode == "soft":
+                    soft_terms.append(weights["non_flexi_overage"] * over_w)
+                else:
+                    soft_terms.append(weights["hours_overage"] * over_w)
 
     # D* preference for sleepover-capable staff
     if modes["sleepover_preference"] != "off":
@@ -501,6 +509,68 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             star_count = sum(x[s][di]["*"] for s in staff_inits)
             # star_count is 0 or 1 due to night cover constraint
             soft_terms.append(weights["prefer_dstar_over_star"] * star_count)
+
+    # -----------------------------------------------------------------
+    # senior_weekend_cover: L.M. or L.D. on every Sat & Sun (D or D*).
+    # Rotation (preferred senior per week) is a SOFT nudge on top.
+    # -----------------------------------------------------------------
+    senior_mode = modes.get("senior_weekend_cover", "hard")
+    present_seniors = [s for s in SENIOR_STAFF if s in staff_by]
+    if senior_mode != "off" and present_seniors:
+        for di, dt in enumerate(days):
+            if dt.weekday() >= 5:  # Sat=5, Sun=6
+                cover_sum = sum(
+                    x[sr][di]["D"] + x[sr][di]["D*"] for sr in present_seniors
+                )
+                if senior_mode == "hard":
+                    model.Add(cover_sum >= 1)
+                else:  # soft
+                    miss = model.NewBoolVar(f"senior_weekend_miss_{di}")
+                    model.Add(cover_sum == 0).OnlyEnforceIf(miss)
+                    model.Add(cover_sum >= 1).OnlyEnforceIf(miss.Not())
+                    soft_terms.append(weights["senior_weekend_cover"] * miss)
+
+    # Rotation NUDGE — the manager pre-picks which senior covers each week's
+    # weekend. Reward D/D* for the assigned senior on their Sat+Sun; if they're
+    # on AL/TRN the hard rule above forces the OTHER senior to step in
+    # (reward just doesn't activate).
+    rotation = payload.get("senior_weekend_rotation") or []
+    if rotation and present_seniors:
+        rot_map: dict[int, str] = {}
+        for r in rotation:
+            wi = r.get("week_index")
+            init = r.get("staff_initials")
+            if isinstance(wi, int) and init in staff_by:
+                rot_map[wi] = init
+        for w in range(weeks):
+            assigned = rot_map.get(w + 1)
+            if not assigned:
+                continue
+            for di in range(w * 7, min((w + 1) * 7, n_days)):
+                if days[di].weekday() >= 5:
+                    soft_terms.append(
+                        -weights["senior_weekend_rotation_nudge"]
+                        * (x[assigned][di]["D"] + x[assigned][di]["D*"])
+                    )
+
+    # -----------------------------------------------------------------
+    # avoid_pair_seniors: penalty when BOTH L.M. and L.D. are on day cover
+    # (D or D*) on the same date. Manager prefers each senior to pair with
+    # other staff.
+    # -----------------------------------------------------------------
+    aps_mode = modes.get("avoid_pair_seniors", "soft")
+    if aps_mode != "off" and all(s in staff_by for s in SENIOR_STAFF):
+        a, b = SENIOR_STAFF
+        for di in range(n_days):
+            a_day = x[a][di]["D"] + x[a][di]["D*"]
+            b_day = x[b][di]["D"] + x[b][di]["D*"]
+            both = model.NewBoolVar(f"aps_{di}")
+            model.Add(a_day + b_day >= 2).OnlyEnforceIf(both)
+            model.Add(a_day + b_day <= 1).OnlyEnforceIf(both.Not())
+            if aps_mode == "hard":
+                model.Add(both == 0)
+            else:  # soft
+                soft_terms.append(weights["avoid_pair_seniors"] * both)
 
     if soft_terms:
         model.Minimize(sum(soft_terms))

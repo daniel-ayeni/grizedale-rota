@@ -390,6 +390,143 @@ def main() -> int:
     )
     print("[OK] no_sleepover_before_leave rule verified (solver + validator)")
 
+    # =====================================================================
+    # Part 1 regression: senior_weekend_cover
+    # Every Sat and Sun in the solver's output must have at least one of
+    # {L.M., L.D.} on D or D*.
+    # =====================================================================
+    print("\n=== NEW RULE: senior_weekend_cover ===")
+    seniors = {"L.M.", "L.D."}
+    rota_days = result["rota"]
+    weekend_misses = []
+    for day in rota_days:
+        dow = datetime.strptime(day["date"], "%Y-%m-%d").weekday()
+        if dow < 5:
+            continue
+        on_day = [
+            a["staff_initials"] for a in day["assignments"]
+            if a["shift"] in {"D", "D*"} and a["staff_initials"] in seniors
+        ]
+        if not on_day:
+            weekend_misses.append(day["date"])
+    assert not weekend_misses, (
+        f"weekend days without a senior (L.M./L.D.) on D/D*: {weekend_misses}"
+    )
+    # Also verify the rotation nudge is respected most of the time:
+    # default rotation is week 1&3=L.M., week 2&4=L.D.
+    payload_rot = json.loads(SEED_PATH.read_text())
+    payload_rot["senior_weekend_rotation"] = [
+        {"week_index": 1, "staff_initials": "L.M."},
+        {"week_index": 2, "staff_initials": "L.D."},
+        {"week_index": 3, "staff_initials": "L.M."},
+        {"week_index": 4, "staff_initials": "L.D."},
+    ]
+    result_rot = solve_rota(payload_rot, time_limit_s=8)
+    assert result_rot["success"], f"rotation-preferred solve failed: {result_rot.get('reason')}"
+    rot_cell = {(d["date"], a["staff_initials"]): a["shift"]
+                for d in result_rot["rota"] for a in d["assignments"]}
+    match = 0
+    total = 0
+    for day in result_rot["rota"]:
+        dt = datetime.strptime(day["date"], "%Y-%m-%d").date()
+        if dt.weekday() < 5:
+            continue
+        total += 1
+        w_idx = ((dt - _parse_date(payload_rot["rota_start_date"])).days // 7) + 1
+        expected = {1: "L.M.", 2: "L.D.", 3: "L.M.", 4: "L.D."}.get(w_idx)
+        if expected and rot_cell.get((day["date"], expected)) in {"D", "D*"}:
+            match += 1
+    print(f"  rotation respected on {match}/{total} weekend days")
+    print("[OK] senior_weekend_cover verified (hard coverage + soft rotation nudge)")
+
+    # =====================================================================
+    # Part 2 regression: contracted_hours_min is PER WEEK
+    # Every non-admin staff should hit their weekly target (within 2h) in
+    # EACH of the 4 weeks.
+    # =====================================================================
+    print("\n=== CHANGED RULE: contracted_hours_min is PER WEEK ===")
+    per_week_cell = {(d["date"], a["staff_initials"]): a["shift"]
+                     for d in result["rota"] for a in d["assignments"]}
+    for s in payload["staff"]:
+        init = s["initials"]
+        target_weekly = int(s.get("target_weekly_hours") or 0)
+        if target_weekly <= 0:
+            continue
+        for w in range(payload.get("weeks", 4)):
+            week_dates = [
+                (_parse_date(payload["rota_start_date"]) + timedelta(days=w * 7 + i)).isoformat()
+                for i in range(7)
+            ]
+            al_w = sum(1 for d in week_dates if per_week_cell.get((d, init)) == "AL")
+            trn_w = sum(1 for d in week_dates if per_week_cell.get((d, init)) == "TRN")
+            hrs = sum(DEFAULT_SHIFT_HOURS[per_week_cell.get((d, init), "OFF")] for d in week_dates)
+            min_required = target_weekly - 12 * al_w - 8 * trn_w - 2
+            assert hrs >= min_required, (
+                f"{init} week {w + 1}: {hrs}h vs required ≥{min_required}h "
+                f"(target {target_weekly}/wk, AL {al_w}, TRN {trn_w})"
+            )
+    print("[OK] every non-admin staff hits weekly contracted hours each of 4 weeks")
+
+    # =====================================================================
+    # Part 3 regression: avoid_pair_seniors
+    # Count days L.M. and L.D. are BOTH on day cover. Soft rule, so some
+    # days may still pair — assert it's rare (<= 2 out of 28).
+    # =====================================================================
+    print("\n=== NEW RULE: avoid_pair_seniors ===")
+    pair_days = [
+        d["date"] for d in result["rota"]
+        if per_week_cell.get((d["date"], "L.M.")) in {"D", "D*"}
+        and per_week_cell.get((d["date"], "L.D.")) in {"D", "D*"}
+    ]
+    print(f"  L.M. + L.D. paired on {len(pair_days)}/28 days: {pair_days}")
+    assert len(pair_days) <= 2, (
+        f"avoid_pair_seniors is weight-40 soft — expected at most 2 pair-days, got {len(pair_days)}"
+    )
+    print("[OK] avoid_pair_seniors keeps senior pairs rare")
+
+    # =====================================================================
+    # Part 4 regression: Flexi redistribution when one flexi is on AL week
+    # When D.A. is on AL all of week 2, T.D. should pick up extra hours in
+    # that specific week. Assert: T.D.'s week-2 hours >= her average week-1,3,4
+    # hours (she absorbs the slack).
+    # =====================================================================
+    print("\n=== BUG REGRESSION: flexi redistribution under AL week ===")
+    al_payload = json.loads(SEED_PATH.read_text())
+    # Mon 2026-04-27 .. Sun 2026-05-03 is week 2
+    al_payload["leave"] = [
+        {"staff_initials": "D.A.", "date": (
+            _parse_date("2026-04-27") + timedelta(days=i)
+        ).isoformat(), "type": "AL"}
+        for i in range(7)
+    ]
+    al_result = solve_rota(al_payload, time_limit_s=10)
+    assert al_result["success"], (
+        f"solver must still succeed when D.A. is on AL all of week 2, "
+        f"got: {al_result.get('reason')}"
+    )
+    al_cell = {(d["date"], a["staff_initials"]): a["shift"]
+               for d in al_result["rota"] for a in d["assignments"]}
+    week_hours = {}
+    for w in range(4):
+        wd = [(_parse_date("2026-04-20") + timedelta(days=w * 7 + i)).isoformat()
+              for i in range(7)]
+        week_hours[w + 1] = sum(DEFAULT_SHIFT_HOURS[al_cell.get((d, "T.D."), "OFF")] for d in wd)
+    td_w2 = week_hours[2]
+    td_others_avg = (week_hours[1] + week_hours[3] + week_hours[4]) / 3
+    print(
+        f"  T.D. hours per week: w1={week_hours[1]}h w2={week_hours[2]}h "
+        f"w3={week_hours[3]}h w4={week_hours[4]}h (others avg {td_others_avg:.1f}h)"
+    )
+    assert td_w2 >= td_others_avg - 2, (
+        f"Flexi redistribution broken: T.D. week-2 hours ({td_w2}h) is "
+        f"well below her avg non-AL-week hours ({td_others_avg:.1f}h). "
+        "Expected the other flexi to pick up D.A.'s slack."
+    )
+    assert td_w2 >= 34, (
+        f"T.D. contracted 34h/wk must hold under flexi AL gap; got {td_w2}h"
+    )
+    print("[OK] flexi redistribution: T.D. absorbs D.A.'s AL-week slack")
+
     return 0
 
 

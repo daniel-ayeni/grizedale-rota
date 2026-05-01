@@ -68,4 +68,5 @@ async def build_solver_payload(db, override_start_date: str | None = None) -> di
         "rule_weights": _rules_to_solver_weights(rules_doc),
         "rule_params": _rules_to_solver_params(rules_doc),
         "shift_hours": settings.get("shift_hours") or {},
+        "senior_weekend_rotation": settings.get("senior_weekend_rotation") or [],
     }

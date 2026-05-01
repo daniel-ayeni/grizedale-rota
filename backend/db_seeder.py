@@ -114,7 +114,7 @@ async def seed_if_empty(db) -> dict:
     if rules_doc:
         rules = rules_doc.get("rules") or {}
         from solver.rule_definitions import RULES_BY_ID
-        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave"):
+        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors"):
             if rule_id in rules:
                 continue
             r_def = RULES_BY_ID[rule_id]
@@ -209,10 +209,34 @@ async def seed_if_empty(db) -> dict:
             "theme_default": "paper",
             "public_holidays": UK_2026_HOLIDAYS,
             "rota_start_date_default": "2026-04-20",
+            "senior_weekend_rotation": [
+                {"week_index": 1, "staff_initials": "L.M."},
+                {"week_index": 2, "staff_initials": "L.D."},
+                {"week_index": 3, "staff_initials": "L.M."},
+                {"week_index": 4, "staff_initials": "L.D."},
+            ],
             "updated_at": _now_iso(),
         }
         await db.settings.insert_one(settings)
         summary["settings"] = 1
+    else:
+        # MIGRATION: backfill senior_weekend_rotation on the existing settings doc
+        existing = await db.settings.find_one({}, {"_id": 0})
+        if existing and "senior_weekend_rotation" not in existing:
+            await db.settings.update_one(
+                {},
+                {"$set": {
+                    "senior_weekend_rotation": [
+                        {"week_index": 1, "staff_initials": "L.M."},
+                        {"week_index": 2, "staff_initials": "L.D."},
+                        {"week_index": 3, "staff_initials": "L.M."},
+                        {"week_index": 4, "staff_initials": "L.D."},
+                    ],
+                    "updated_at": _now_iso(),
+                }},
+            )
+            logger.info("Migration: added senior_weekend_rotation to settings")
+            summary["migration_senior_weekend_rotation"] = 1
 
     # rotas — seed ONE previous published rota (so "copy from previous"
     # has data to copy on day one). Dated 4 weeks before the default start.

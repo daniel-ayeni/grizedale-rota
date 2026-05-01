@@ -19,6 +19,8 @@ const RULE_DEFS = [
     { key: "no_n_to_d",            name: "No N → D back-to-back",                desc: "Staff cannot work a day shift the morning after a waking night.", immovable: true },
     { key: "no_dstar_to_dstar",    name: "No D* → D* back-to-back",              desc: "Sleepover-day shifts cannot be consecutive.", immovable: true },
     { key: "no_sleepover_before_leave", name: "No sleepover before AL / training", desc: "A D* or * sleeps until ~08:00 the next day, so staff cannot start annual leave or training straight after a sleepover.", immovable: true },
+    { key: "senior_weekend_cover", name: "Senior on every weekend", desc: "Each Saturday and Sunday must have at least one of L.M. (Deputy) or L.D. (Senior Care Support) on a D or D*. Rotation preference set in /settings.", immovable: true },
+    { key: "avoid_pair_seniors", name: "Avoid pairing L.M. and L.D. on the same shift", desc: "Manager prefers to split L.M. and L.D. so each pairs with other staff. Penalty when both are on day cover the same date." },
     { key: "med_competent_required", name: "Medication-competent on every shift", desc: "Every day shift and every night shift includes ≥1 medication-competent staff." },
     { key: "first_aider_required",   name: "First-aider on every shift",          desc: "Every day shift and every night shift includes ≥1 first-aider." },
     { key: "no_male_pair_alone",     name: "Male staff cannot be alone together", desc: "If any male staff is on a shift, at least one female must be on the same shift." },

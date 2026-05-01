@@ -1,16 +1,20 @@
 import { useEffect, useState } from "react";
-import { Save, Sun, Moon } from "lucide-react";
+import { Save, Sun, Moon, Users as UsersIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 import { useTheme } from "@/contexts/ThemeContext";
 
 const SHIFT_KEYS = ["D", "D*", "N", "*", "OFF", "AL", "TRN"];
+const SENIOR_CHOICES = ["L.M.", "L.D."];
 
 export default function Settings() {
     const [settings, setSettings] = useState(null);
@@ -115,6 +119,49 @@ export default function Settings() {
                         </li>
                     ))}
                 </ul>
+            </div>
+
+            <div className="section-header" data-testid="settings-section-senior-rotation">Weekend Senior Rotation</div>
+            <div className="app-card p-5" data-testid="settings-senior-rotation-card">
+                <div className="text-sm text-muted-foreground mb-4 flex items-start gap-2">
+                    <UsersIcon className="w-4 h-4 mt-0.5 shrink-0" />
+                    <span>
+                        Pick which senior (L.M. or L.D.) covers Sat &amp; Sun of each week.
+                        If the assigned senior is on AL/TRN that weekend, the other senior
+                        automatically fills in (at least one must be on D or D* every Sat &amp; Sun).
+                    </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {[1, 2, 3, 4].map((wi) => {
+                        const entry = (settings.senior_weekend_rotation || []).find((r) => r.week_index === wi)
+                            || { week_index: wi, staff_initials: wi % 2 === 1 ? "L.M." : "L.D." };
+                        const setRotationStaff = (newStaff) => {
+                            const cur = (settings.senior_weekend_rotation || []).slice();
+                            const idx = cur.findIndex((r) => r.week_index === wi);
+                            const next = { week_index: wi, staff_initials: newStaff };
+                            if (idx >= 0) cur[idx] = next; else cur.push(next);
+                            cur.sort((a, b) => a.week_index - b.week_index);
+                            update("senior_weekend_rotation", cur);
+                        };
+                        return (
+                            <div key={wi} className="rounded-lg p-3"
+                                 style={{ background: "hsl(var(--bg-elev))", border: "1px solid hsl(var(--border))" }}
+                                 data-testid={`senior-rotation-week-${wi}`}>
+                                <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">Week {wi} weekend</div>
+                                <Select value={entry.staff_initials} onValueChange={setRotationStaff}>
+                                    <SelectTrigger data-testid={`senior-rotation-week-${wi}-trigger`}>
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {SENIOR_CHOICES.map((s) => (
+                                            <SelectItem key={s} value={s}>{s}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        );
+                    })}
+                </div>
             </div>
 
             <div className="section-header" data-testid="settings-section-theme">Theme</div>

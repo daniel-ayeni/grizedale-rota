@@ -40,6 +40,14 @@ Build a rota builder web app for Grizedale (UK care home). Tech: FastAPI + React
   - **Paper theme cells** (2026-05-01 — photo-accurate re-skin): D=green `#3F8C4D` (white text), D*=yellow `#F5D04A` (slate), N=white (slate, thin border), *=bright yellow `#FFE066`, AL=pink `#C9377C` (white text), TRN=red `#D33B3B` (cell shows "T" not "TRN", white text). On-call chip `#3461A8`, med-cycle flag `#A8C5E0`, pay-cut-off marker `#C8CCD0`, legend swatches updated to match.
   - **Bug fix — day-cover affected_cells**: when a user changes D\* → \* the validator now flags the `*` cell (not just the surviving D cell) as `affected`, so the cell the user just edited red-borders and the violations counter increments. Same widening applied to night_cover. Regression test in `test_runner.py` (D\* → \* on first L.D. D\* date asserts L.D. ∈ affected_cells of the day_cover violation).
   - **2026-05-01 — New immovable hard rule `no_sleepover_before_leave`**: D\* or \* today forbids AL/TRN tomorrow (sleepover extends into the morning of the next day, so staff can't start leave/training straight after). Encoded in solver as CP-SAT constraint + in validator with affected_cells flagging both the sleepover cell and the leave cell. Seeded in rules_config as immovable. Regression test in test_runner.py: locking D.A. on D\* Tue + AL Wed → solver correctly returns INFEASIBLE; validator correctly emits `no_sleepover_before_leave` hard violation.
+  - **2026-05-01 — Senior weekend cover + per-week hours + flexi redistribution fix**:
+    - **`senior_weekend_cover` (hard, immovable)**: every Sat & Sun must have L.M. or L.D. on D/D\*. Soft rotation nudge honours `settings.senior_weekend_rotation` (week 1&3=L.M., week 2&4=L.D. by default). Automatic fallback: if the assigned senior is on AL/TRN, the OTHER senior steps in.
+    - **`avoid_pair_seniors` (soft, weight 40)**: penalty per day L.M. and L.D. both on D/D\*. Solver result: 0/28 days paired in default seed — perfect split.
+    - **Contracted hours minimum — PER WEEK (not rota-aggregate)**: each week individually must hit target_weekly_hours − 12\*AL − 8\*TRN − 2. Same for non-flexi +8h cap. This was the key refactor that enables flexi redistribution.
+    - **Flexi overtime reward — PER WEEK**: over_rewardable / over_above_cap split computed each week, so when one flexi has AL that week the OTHER flexi gets loaded up THAT week instead of the slack being spread across 4 weeks.
+    - **Flexi bug fix verified**: with D.A. on AL all week 2, T.D. jumps to 72h that week vs 42h avg in other 3 weeks. `test_runner.py` asserts this.
+    - **Settings UI** — new "Weekend Senior Rotation" section with 4 dropdowns (week 1-4, pick L.M. or L.D.).
+    - **Rules UI** — both new rules listed; `senior_weekend_cover` immovable.
 
 ## Open items / not yet implemented
 - "Generate Rota" button in Dashboard still disabled (Phase 3 will wire it up + what-if mode).

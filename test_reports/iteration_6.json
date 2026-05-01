@@ -1,0 +1,53 @@
+{
+  "summary": "Phase 3 ADD-ON (4 new solver items) end-to-end testing — 8/9 pytest PASS in /app/backend/tests/test_phase3_addon.py. Frontend UI for Settings Weekend Senior Rotation (4 cards L.M./L.D./L.M./L.D.) and Rules (Senior on every weekend IMMOVABLE+Hard; Avoid pairing L.M. and L.D. Soft with weight 40 slider) both render correctly against the live preview URL. The one backend FAILURE is a real, reproducible INFEASIBILITY in POST /api/rotas/{id}/generate when D.A. is put on AL for >=2 consecutive days in week 2 — even though the same scenario succeeds via the standalone solver (test_runner.py OPTIMAL, T.D.=72h/wk2). Root cause confirmed: the DB rules_config has `non_flexi_overage` mode=hard; with the newly per-week contracted_hours_min also hard, the combined constraints over-constrain the LP when the only other Flexi (T.D.) has to absorb a whole AL week — toggling non_flexi_overage to soft (PUT /api/rules) makes the 7-day D.A. AL scenario OPTIMAL immediately. All other new rule changes (senior_weekend_cover hard+8/8 weekend coverage, rotation 6+/8, rotation fallback when L.M. AL week3→L.D. covers, per-week contracted hours, per-week non_flexi cap for all non-flexi staff, avoid_pair_seniors 0/28 pair-days) verified PASS.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/rotas/{id}/generate",
+        "issue": "Returns 422 INFEASIBLE when D.A. is on AL for >=2 consecutive days (e.g. problem-statement scenario: D.A. AL 2026-04-27..2026-05-03). Reproduced with 2, 3, 4, 5, 6, 7-day AL spans — all INFEASIBLE. Setting `non_flexi_overage` to soft via PUT /api/rules makes the exact same 7-day scenario OPTIMAL. The standalone solver via solver/test_runner.py succeeds because the seed file does NOT include `non_flexi_overage` in its rules dict, so that hard constraint is skipped. The main agent's pre-test 'T.D.=72h week 2' result was obtained via the standalone runner, NOT via the HTTP endpoint — so the BUG FIX #4 (flexi redistribution per-week) is NOT verifiable through the real API under the current default rule set. Fix options: (a) downgrade non_flexi_overage to soft in db_seeder defaults, (b) exempt the solver from the cap when contracted-hours-min would otherwise be infeasible, (c) increase the +8h cap, or (d) relax the cap on the AL-affected week.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Sidebar footer",
+        "issues": ["Still shows 'Phase 2 · v0.3.0' — carry-over from iter_4 / iter_5. Bump to Phase 3 · v0.4.0."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase3_addon.py",
+    "/app/test_reports/pytest/phase3_addon_results.xml"
+  ],
+  "action_items": [
+    "HIGH: Fix the non_flexi_overage + per-week contracted_hours_min over-constraint so that the Flexi-redistribution bug fix (T.D. absorbs D.A.'s AL week) actually works via POST /api/rotas/{id}/generate — today it returns INFEASIBLE for any >=2-day D.A. AL span. Simplest fix: change `non_flexi_overage` default mode to 'soft' (weight already set) in db_seeder.py so that the spec's intent (+8h cap is preferred, not mandatory) holds. Then re-run /app/backend/tests/test_phase3_addon.py::TestFlexiRedistribution — should pass.",
+    "Optional: bump sidebar footer to 'Phase 3 · v0.4.0'."
+  ],
+  "critical_code_review_comments": [
+    "rota_solver.py per-week contracted-hours change looks correct and the validator mirrors it; senior_weekend_cover hard rule + rotation soft nudge work well in isolation.",
+    "solver_input_builder.py now correctly passes settings.senior_weekend_rotation through to the solver payload.",
+    "GAP: db_seeder `non_flexi_overage` default mode='hard' is too strict for the new per-week semantics. When coupled with per-week contracted_hours_min hard and a long AL span for one Flexi, the LP becomes infeasible for realistic weekly coverage. Either lower its mode to 'soft' by default or widen the cap.",
+    "TEST_DRIFT: solver/test_runner.py's BUG regression uses the seed JSON which lacks `non_flexi_overage` altogether — so it cannot catch this. Recommend adding a pytest that uses the real builder + DB rules to exercise the full request path (this test file does so now).",
+    "Settings page senior_weekend_rotation UI + Save is clean, rotation persisted correctly to DB (verified via GET /api/settings round-trip test)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase3_addon.py",
+    "/app/test_reports/iteration_6.json",
+    "/app/test_reports/pytest/phase3_addon_results.xml"
+  ],
+  "success_rate": {
+    "backend": "89% (8/9 pytest) — 1 failure is the documented non_flexi_overage x flexi-redistribution integration bug",
+    "frontend": "100% (Settings rotation + Rules new cards render as specified)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "TEST_addon_* rotas (7 of them) + ephemeral leave for D.A., L.M. on dates in 2026-04..2026-05 all created and deleted in finally blocks. PUT /api/settings round-trip restores original senior_weekend_rotation. No production data mutated.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=<public_url> python -m pytest /app/backend/tests/test_phase3_addon.py -v. Wall time ~45s (many solver round-trips). The single failing test is TestFlexiRedistribution::test_td_absorbs_da_al_week — fix `non_flexi_overage` default mode to 'soft' in db_seeder.py AND run db reseed (or PATCH via PUT /api/rules), then re-run. The 8 passing assertions already cover items 1,2,3,5,6,7,9,10,11 of the review_request; item 4 rotation fallback is also explicitly tested and passes; items 2/3 (senior weekend) verified 8/8 cover and >=6/8 rotation match.",
+  "rca_of_the_issue": "POST /api/rotas/{id}/generate returns INFEASIBLE when D.A. has multi-day AL in week 2 because the solver is built from MongoDB rules_config (solver_input_builder.py:26-49) which contains `non_flexi_overage: {mode: hard, weight: 50}`. Combined with the new hard per-week `contracted_hours_min` (target-2 each week) and the unchanged hard `manager_no_shifts`, the LP for that week demands every non-flexi staff fill their weekly min of (target-2) AND stay <= target+8, while the single remaining Flexi (T.D.) must pick up the rest. The CP-SAT cannot find an assignment that satisfies capability + consecutive-shift + per-shift med/first-aider + non_flexi_overage all at once. Standalone test_runner.py masks this bug because its seed JSON (backend/seed/grizedale.json line `rules`) does NOT declare `non_flexi_overage` at all, so that constraint is simply not generated by the solver. Mitigation: change non_flexi_overage mode to 'soft' in db_seeder.py migration (line ~117 rules_config) and existing DB rows, OR increase the +8h cap to +12h, OR exempt the week containing a 7-day AL for a flexi staff. Repro: PUT /api/rules with non_flexi_overage.mode=soft → the same D.A. 7-day AL scenario returns OPTIMAL and T.D. week-2 hours jump above her average (verified live during this test iteration)."
+}

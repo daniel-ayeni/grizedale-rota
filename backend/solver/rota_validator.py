@@ -263,31 +263,74 @@ def validate_rota(
                         f"{s} (admin-only) assigned {cdat['shift']} on {d_str} without manager override (lock)",
                         date_=d_str, staff_initials=s))
 
-    # --- contracted hours minimum ---------------------------------------
+    # --- contracted hours minimum (PER WEEK) ----------------------------
+    # Per-week check: for each staff S and each week W, total working hours
+    # in W must be >= target_weekly_hours(S) - 12*AL_in_W - 8*TRN_in_W - 2.
     mode_hours = _mode_for(rules_config, "contracted_hours_min", "hard")
     if mode_hours != "off":
         for s in staff_inits:
             info = staff_by[s]
-            target_total = int(info.get("target_weekly_hours", 0)) * weeks
-            if target_total <= 0:
+            target_weekly = int(info.get("target_weekly_hours", 0))
+            if target_weekly <= 0:
                 continue
-            actual = 0
-            al_count = 0
-            trn_count = 0
-            for d_str in day_strs:
-                sh = cell[(d_str, s)]["shift"]
-                actual += SHIFT_HOURS.get(sh, 0)
-                if sh == "AL":
-                    al_count += 1
-                if sh == "TRN":
-                    trn_count += 1
-            min_required = target_total - 12 * al_count - 8 * trn_count - 2
-            if actual < min_required:
-                violations.append(_v("contracted_hours_min", mode_hours,
-                    f"{s}: only {actual}h scheduled vs required ≥{min_required}h "
-                    f"(target {target_total}, AL {al_count}, TRN {trn_count})",
-                    staff_initials=s,
-                    affected_cells=[{"date": d, "staff_initials": s} for d in day_strs]))
+            for w in range(weeks):
+                week_strs = day_strs[w * 7:(w + 1) * 7]
+                actual_w = 0
+                al_w = 0
+                trn_w = 0
+                for d_str in week_strs:
+                    sh = cell[(d_str, s)]["shift"]
+                    actual_w += SHIFT_HOURS.get(sh, 0)
+                    if sh == "AL":
+                        al_w += 1
+                    if sh == "TRN":
+                        trn_w += 1
+                min_required = target_weekly - 12 * al_w - 8 * trn_w - 2
+                if actual_w < min_required:
+                    violations.append(_v("contracted_hours_min", mode_hours,
+                        f"{s}: week {w + 1} only {actual_w}h vs required ≥{min_required}h "
+                        f"(target {target_weekly}/wk, AL {al_w}, TRN {trn_w})",
+                        staff_initials=s, date_=week_strs[0],
+                        affected_cells=[{"date": d, "staff_initials": s} for d in week_strs]))
+
+    # --- senior_weekend_cover ------------------------------------------
+    # For each Sat and Sun, at least one of {L.M., L.D.} must be on D or D*.
+    SENIOR_STAFF = ("L.M.", "L.D.")
+    mode_sw = _mode_for(rules_config, "senior_weekend_cover", "hard")
+    present_seniors = [s for s in SENIOR_STAFF if s in staff_by]
+    if mode_sw != "off" and present_seniors:
+        for di, d_str in enumerate(day_strs):
+            dow = (_parse_date(d_str).weekday())
+            if dow < 5:
+                continue
+            on_cover = [s for s in present_seniors
+                        if cell[(d_str, s)]["shift"] in {"D", "D*"}]
+            if not on_cover:
+                violations.append(_v("senior_weekend_cover", mode_sw,
+                    f"No senior ({' or '.join(present_seniors)}) on day cover "
+                    f"on {d_str} ({DOW_NAMES[dow]})",
+                    date_=d_str,
+                    affected_cells=[{"date": d_str, "staff_initials": s}
+                                    for s in present_seniors]))
+
+    # --- avoid_pair_seniors --------------------------------------------
+    # Soft penalty-style violation when BOTH L.M. and L.D. are on day cover
+    # (D or D*) on the same date.
+    mode_aps = _mode_for(rules_config, "avoid_pair_seniors", "soft")
+    if mode_aps != "off" and all(s in staff_by for s in SENIOR_STAFF):
+        a, b = SENIOR_STAFF
+        for d_str in day_strs:
+            a_shift = cell[(d_str, a)]["shift"]
+            b_shift = cell[(d_str, b)]["shift"]
+            if a_shift in {"D", "D*"} and b_shift in {"D", "D*"}:
+                violations.append(_v("avoid_pair_seniors", mode_aps,
+                    f"{a} and {b} both on day cover on {d_str} "
+                    "— manager prefers to split them",
+                    date_=d_str,
+                    affected_cells=[
+                        {"date": d_str, "staff_initials": a},
+                        {"date": d_str, "staff_initials": b},
+                    ]))
 
     return violations
 

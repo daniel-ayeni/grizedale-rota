@@ -169,10 +169,26 @@ RULES: list[dict] = [
     {
         "id": "non_flexi_overage",
         "name": "Non-flexi staff stay near contracted hours",
-        "description": "Hard cap (mode=hard) on non-flexi staff hours at contracted weekly × weeks + 2h tolerance. Switch to soft to allow overage with weighted penalty. Flexi staff (see overtime preference rule) are exempt.",
+        "description": "Hard cap (mode=hard) on non-flexi staff hours at contracted weekly + 8h per week. Switch to soft to allow overage with weighted penalty. Flexi staff (see overtime preference rule) are exempt.",
         "severity_default": "hard",
         "immovable": False,
         "weight_default": 50,
+    },
+    {
+        "id": "senior_weekend_cover",
+        "name": "Senior on every weekend",
+        "description": "Each Saturday and Sunday must have at least one of L.M. (Deputy) or L.D. (Senior Care Support) on a D or D* shift. Rotation pattern (per week) is a soft preference.",
+        "severity_default": "hard",
+        "immovable": True,
+        "weight_default": 0,
+    },
+    {
+        "id": "avoid_pair_seniors",
+        "name": "Avoid pairing L.M. and L.D. on the same shift",
+        "description": "Manager prefers to split L.M. and L.D. so each pairs with other staff. Penalty when both are on the same working day (D or D*).",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 40,
     },
 ]
 
