@@ -20,6 +20,36 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 ## What's been implemented (latest first)
 
 ### 2026-05-01 — Consolidated batch (this session)
+- **Export row order fix**: `display_order` field on every staff doc
+  (J.C.=10 → J.R.=80) seeded from grizedale.json array index. PDF/Excel
+  exports + `/api/staff` listing all sort by display_order. PDF + Excel
+  rows now match the on-screen rota grid 1:1.
+- **OFF blank in exports**: PDF and Excel both render OFF cells as
+  empty (no literal "OFF" text) to match the on-screen Paper-theme
+  behaviour.
+- **What-If mode removed** from frontend per user feedback (didn't
+  understand the use). Endpoints `/whatif` + `/apply-whatif` removed
+  from server.py. State, banner, diff-dots, imports all gone.
+- **Frozen staff column** with "Frozen / Unfrozen" toolbar toggle
+  (default ON, persisted in localStorage). `position: sticky; left: 0`
+  on the identity cells + corner cells, with subtle right-edge shadow
+  when content scrolls behind.
+- **Emergent watermark removed**: `<a id="emergent-badge">` block,
+  `emergent-main.js` script and the `emergent.sh` description meta
+  tag deleted from `frontend/public/index.html`. Page title now
+  "Grizedale Care Home — Rota Builder".
+- **Short request-token URL**: tokens are now 6-char base62 (e.g.
+  `/r/vAYf67`) instead of 32-char UUIDs. Existing long tokens still
+  resolve. `/requests` drawer shows the short path as a prominent
+  clickable code chip with full URL beneath + "Copy link" button.
+- **Default theme = Modern**: db_seeder bumps existing
+  `theme_default: "paper"` settings doc to `"modern"` and ThemeContext
+  defaults to "modern" for fresh visitors. localStorage preference
+  still wins for returning users.
+- **Delete rotas on /rotas**: trash-icon Delete button per row +
+  "Select multiple" mode with bulk Delete. Confirmation dialog with
+  count + warning. Published rotas can't be deleted (toast suggests
+  unpublishing first).
 - **Phase 4 — Exports**:
   - `GET /api/rotas/{id}/export.pdf` — A3 landscape PDF rendered with
     ReportLab, mirrors the Paper-theme grid (italic blue title, peach

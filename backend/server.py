@@ -291,7 +291,14 @@ async def logout(current=Depends(auth_required)):
 # ============================================================================
 @api.get("/staff")
 async def list_staff(current=Depends(auth_required)):
-    return await db.staff.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    """Return all staff in display order (the same order the rota editor
+    renders rows top-to-bottom). `display_order` is seeded from the
+    grizedale.json array index × 10, so manager → deputy → seniors →
+    flexis → nights. Falls back to alphabetic for any docs missing the
+    field (legacy)."""
+    docs = await db.staff.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    docs.sort(key=lambda s: (s.get("display_order", 9999), s.get("initials", "")))
+    return docs
 
 
 @api.post("/staff")
@@ -876,7 +883,9 @@ async def generate_rota(rota_id: str, current=Depends(auth_required)):
 async def export_rota_pdf(rota_id: str, current=Depends(auth_required)):
     from exports.pdf_rota import render_rota_pdf
     rota = await _load_rota(rota_id)
-    staff = await db.staff.find({"active": True}, {"_id": 0}).sort("initials", 1).to_list(100)
+    staff = await db.staff.find({"active": True}, {"_id": 0}).to_list(100)
+    # Match the on-screen rota row order (display_order then initials).
+    staff.sort(key=lambda s: (s.get("display_order", 9999), s.get("initials", "")))
     settings = await db.settings.find_one({}, {"_id": 0}) or {}
     home_name = settings.get("home_name", "Grizedale")
     pdf_bytes = render_rota_pdf(rota, staff, home_name=home_name)
@@ -892,7 +901,8 @@ async def export_rota_pdf(rota_id: str, current=Depends(auth_required)):
 async def export_rota_xlsx(rota_id: str, current=Depends(auth_required)):
     from exports.excel_rota import render_rota_xlsx
     rota = await _load_rota(rota_id)
-    staff = await db.staff.find({"active": True}, {"_id": 0}).sort("initials", 1).to_list(100)
+    staff = await db.staff.find({"active": True}, {"_id": 0}).to_list(100)
+    staff.sort(key=lambda s: (s.get("display_order", 9999), s.get("initials", "")))
     settings = await db.settings.find_one({}, {"_id": 0}) or {}
     home_name = settings.get("home_name", "Grizedale")
     xlsx_bytes = render_rota_xlsx(rota, staff, home_name=home_name)
@@ -924,141 +934,6 @@ async def export_holiday_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
-
-
-# ============================================================================
-# Phase 3b: What-If solve (read-only) + Apply (commit proposed state)
-# ============================================================================
-@api.post("/rotas/{rota_id}/whatif")
-async def whatif_solve(
-    rota_id: str,
-    body: dict[str, Any],
-    current=Depends(auth_required),
-):
-    """Run the solver against a proposed assignments + leave overrides
-    snapshot WITHOUT writing to Mongo. Returns the solver output and
-    validation report so the front-end can preview the result.
-
-    Body shape: {
-        "assignments": [{date, staff_initials, shift, locked}, ...],
-        "leave_overrides": [{staff_initials, date, type}, ...]  # additive
-    }
-    """
-    from solver_input_builder import build_solver_payload
-    from solver.rota_solver import solve_rota
-    from solver.rota_validator import validate_rota
-
-    rota = await _load_rota(rota_id)
-    proposed_assignments = body.get("assignments") or rota.get("assignments") or []
-    proposed_leave = body.get("leave_overrides") or []
-
-    # Build solver payload from current DB state, then OVERLAY the
-    # proposed assignments as locked cells + add leave overrides.
-    payload = await build_solver_payload(db, override_start_date=rota["start_date"])
-    payload["weeks"] = int(rota.get("weeks", 4))
-    # Only respect cells the manager has EXPLICITLY locked. Everything
-    # else is fair game for the solver to refill given the new leave
-    # overrides. Non-locked cells with a leave override become AL.
-    payload_locked: dict[tuple[str, str], dict] = {}
-    leave_override_keys = {(ov.get("staff_initials"), ov.get("date")) for ov in proposed_leave}
-    for a in proposed_assignments:
-        if not a.get("locked"):
-            continue
-        # Don't lock a cell that has a leave override on it — leave wins.
-        if (a["staff_initials"], a["date"]) in leave_override_keys:
-            continue
-        payload_locked[(a["staff_initials"], a["date"])] = {
-            "staff_initials": a["staff_initials"],
-            "date": a["date"],
-            "shift": a["shift"],
-        }
-    payload["locked_cells"] = list(payload_locked.values())
-    # Merge leave overrides on top of existing leave.
-    existing_leave_keys = {
-        (e["staff_initials"], e["date"]) for e in (payload.get("leave") or [])
-    }
-    for ov in proposed_leave:
-        if (ov.get("staff_initials"), ov.get("date")) in existing_leave_keys:
-            continue
-        payload.setdefault("leave", []).append({
-            "staff_initials": ov["staff_initials"],
-            "date": ov["date"],
-            "type": ov.get("type", "AL"),
-        })
-
-    result = solve_rota(payload, time_limit_s=15)
-    if not result.get("success"):
-        return {"success": False, "reason": result.get("reason"),
-                "blocking_constraints": result.get("blocking_constraints", [])}
-
-    # Build a candidate rota dict for validation
-    new_assignments = []
-    for day in result["rota"]:
-        for a in day["assignments"]:
-            new_assignments.append({
-                "date": day["date"],
-                "staff_initials": a["staff_initials"],
-                "shift": a["shift"],
-                "locked": (a["staff_initials"], day["date"]) in payload_locked,
-            })
-    candidate = dict(rota)
-    candidate["assignments"] = new_assignments
-    rules_doc = await db.rules_config.find_one({}, {"_id": 0}) or {}
-    rules_config = rules_doc.get("rules") or {}
-    staff_docs = await db.staff.find({"active": True}, {"_id": 0}).to_list(100)
-    violations = validate_rota(candidate, staff_docs, rules_config=rules_config)
-    summary = {"hard": sum(1 for v in violations if v.get("severity") == "hard"),
-               "soft": sum(1 for v in violations if v.get("severity") == "soft")}
-    return {
-        "success": True,
-        "assignments": new_assignments,
-        "soft_violations_score": result.get("soft_violations_score"),
-        "solve_time_ms": result.get("solve_time_ms"),
-        "validation_report": {"violations": violations, "summary": summary},
-    }
-
-
-@api.post("/rotas/{rota_id}/apply-whatif")
-async def apply_whatif(
-    rota_id: str,
-    body: dict[str, Any],
-    current=Depends(auth_required),
-):
-    """Persist a what-if snapshot as the rota's new assignments, plus
-    persist any leave overrides as fresh leave rows. After apply,
-    re-validate and return the updated rota."""
-    rota = await _load_rota(rota_id)
-    new_assignments = body.get("assignments") or []
-    leave_overrides = body.get("leave_overrides") or []
-
-    # Persist leave overrides idempotently.
-    for ov in leave_overrides:
-        try:
-            await db.leave.insert_one({
-                "id": str(uuid.uuid4()),
-                "staff_initials": ov["staff_initials"],
-                "date": ov["date"],
-                "type": ov.get("type", "AL"),
-                "notes": ov.get("notes", "via what-if"),
-                "created_at": _now(),
-            })
-            logger.info("LEAVE_INSERT staff=%s date=%s type=%s by=%s (whatif-apply)",
-                        ov["staff_initials"], ov["date"], ov.get("type", "AL"),
-                        (current or {}).get("email", "?"))
-        except Exception:
-            await db.leave.update_one(
-                {"staff_initials": ov["staff_initials"], "date": ov["date"]},
-                {"$set": {"type": ov.get("type", "AL")}},
-            )
-
-    await db.rotas.update_one(
-        {"id": rota_id},
-        {"$set": {"assignments": new_assignments, "updated_at": _now()}},
-    )
-    rota["assignments"] = new_assignments
-    rota["updated_at"] = _now()
-    rota["validation_report"] = await _validate_rota_doc(rota)
-    return rota
 
 
 # ============================================================================
@@ -1275,7 +1150,30 @@ async def list_tokens(current=Depends(auth_required)):
 
 @api.post("/request-tokens")
 async def create_token(payload: TokenCreate, current=Depends(auth_required)):
-    token = secrets.token_urlsafe(24)
+    """Generate a SHORT request-link token for a staff member.
+
+    The token is a 6-char base62 string (e.g. `x7kbP9`) so the URL stays
+    pasteable in a text message. We retry on the (very unlikely) collision.
+    Existing long-format UUID tokens still resolve via the public lookup
+    endpoint — only newly-issued tokens are short.
+
+    Custom-hostname note: the public URL is served from the deployment
+    host (e.g. `<app>.preview.emergentagent.com`). To shorten the host
+    too, point a custom CNAME at the deployment via the platform deploy
+    config — that's a deploy-time change, not an app-code change.
+    """
+    import string
+    alphabet = string.ascii_letters + string.digits  # 62 chars
+    for _ in range(8):
+        token = "".join(secrets.choice(alphabet) for _ in range(6))
+        # Collision check — token is the unique key on the request-token row
+        existing = await db.request_tokens.find_one({"token": token}, {"_id": 0, "id": 1})
+        if not existing:
+            break
+    else:
+        # 8 collisions in a row would mean we're full at 6 chars (62^6 = 56B
+        # combos) — fall back to a longer token to guarantee uniqueness.
+        token = secrets.token_urlsafe(8)
     doc = {
         "id": str(uuid.uuid4()),
         "token": token,

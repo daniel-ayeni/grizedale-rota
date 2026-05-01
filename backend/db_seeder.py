@@ -149,6 +149,29 @@ async def seed_if_empty(db) -> dict:
         logger.info("Migration: backfilled shift_preference=no_preference on %d staff", res_pref.modified_count)
         summary["migration_shift_preference"] = res_pref.modified_count
 
+    # MIGRATION: backfill `display_order` field — match the seed JSON
+    # array order (manager → deputy → seniors → flexis → nights). Both the
+    # /staff page and the rota grid sort rows by display_order ASC, and
+    # the PDF/Excel exports MUST match.
+    canonical_order = ["J.C.", "L.M.", "L.D.", "D.A.", "T.D.", "C.E.", "A.A.", "J.R."]
+    display_order_updates = 0
+    for idx, init in enumerate(canonical_order):
+        res = await db.staff.update_one(
+            {"initials": init},
+            {"$set": {"display_order": (idx + 1) * 10, "updated_at": _now_iso()}},
+        )
+        display_order_updates += res.modified_count
+    # Anyone NOT in the canonical list (custom staff added by manager)
+    # gets a default display_order at the end if missing.
+    res_extra = await db.staff.update_many(
+        {"display_order": {"$exists": False}},
+        {"$set": {"display_order": 999, "updated_at": _now_iso()}},
+    )
+    display_order_updates += res_extra.modified_count
+    if display_order_updates > 0:
+        logger.info("Migration: assigned display_order to %d staff", display_order_updates)
+        summary["migration_display_order"] = display_order_updates
+
     # MIGRATION: ensure rules_config has overtime_prefer_flexi entry
     rules_doc = await db.rules_config.find_one({}, {"_id": 0})
     if rules_doc:
@@ -297,7 +320,7 @@ async def seed_if_empty(db) -> dict:
             "rota_length_weeks": 4,
             "rota_start_day": "Mon",
             "shift_hours": {"D": 12, "D*": 14, "N": 12, "*": 0, "OFF": 0, "AL": 0, "TRN": 0},
-            "theme_default": "paper",
+            "theme_default": "modern",
             "public_holidays": UK_2026_HOLIDAYS,
             "rota_start_date_default": "2026-04-20",
             "senior_weekend_rotation": [
@@ -328,6 +351,16 @@ async def seed_if_empty(db) -> dict:
             )
             logger.info("Migration: added senior_weekend_rotation to settings")
             summary["migration_senior_weekend_rotation"] = 1
+        # MIGRATION: bump theme_default from "paper" → "modern" for any
+        # existing settings doc that still has the legacy default.
+        # Existing users with a localStorage theme preference are
+        # unaffected (the frontend honours localStorage first).
+        if existing and existing.get("theme_default") == "paper":
+            await db.settings.update_one(
+                {}, {"$set": {"theme_default": "modern", "updated_at": _now_iso()}},
+            )
+            logger.info("Migration: theme_default paper → modern")
+            summary["migration_theme_default_modern"] = 1
 
     # rotas — seed ONE previous published rota (so "copy from previous"
     # has data to copy on day one). Dated 4 weeks before the default start.

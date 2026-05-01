@@ -38,6 +38,7 @@ SHIFT_TEXT = {
     "OFF": "FF777777",
     "":    "FF1A1A1A",
 }
+SHIFT_LABEL_OUT = {"D": "D", "D*": "D*", "N": "N", "*": "*", "AL": "AL", "TRN": "T", "OFF": "", "": ""}
 SHIFT_HOURS = {"D": 12, "D*": 14, "N": 12, "*": 0, "OFF": 0, "AL": 0, "TRN": 0, "": 0}
 DOW_LETTERS = ["M", "T", "W", "T", "F", "S", "S"]
 PEACH_FILL = PatternFill(start_color="FFF4B68A", end_color="FFF4B68A", fill_type="solid")
@@ -110,7 +111,9 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
             col = di + 2
             cell_doc = asg.get((d.isoformat(), s["initials"]), {})
             sh = cell_doc.get("shift", "")
-            label = "T" if sh == "TRN" else sh
+            # Map OFF and blank to an empty cell so the export matches the
+            # on-screen Paper-theme behaviour (no literal "OFF" text).
+            label = SHIFT_LABEL_OUT.get(sh, sh)
             cell = ws.cell(row=row, column=col, value=label or None)
             cell.fill = PatternFill(
                 start_color=SHIFT_FILL.get(sh, "FFFFFFFF"),

@@ -281,18 +281,43 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                 <div className="mt-4 space-y-2">
                     <Label className="text-xs uppercase tracking-wider text-muted-foreground">Active links · {tokens.length}</Label>
                     {tokens.length === 0 && <div className="text-sm text-muted-foreground py-2">No active links</div>}
-                    {tokens.map((t) => (
-                        <div key={t.id} className="flex items-center justify-between p-2 rounded border" style={{ borderColor: "hsl(var(--border))" }} data-testid={`link-row-${t.id}`}>
-                            <div>
-                                <div className="text-sm font-semibold">{t.staff_initials}</div>
-                                <div className="text-xs text-muted-foreground">expires {t.expires_at?.slice(0, 10)}</div>
+                    {tokens.map((t) => {
+                        const fullUrl = `${window.location.origin}/r/${t.token}`;
+                        return (
+                            <div key={t.id} className="p-2 rounded border space-y-1.5" style={{ borderColor: "hsl(var(--border))" }} data-testid={`link-row-${t.id}`}>
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <div className="text-sm font-semibold">{t.staff_initials}</div>
+                                        <div className="text-xs text-muted-foreground">expires {t.expires_at?.slice(0, 10)}</div>
+                                    </div>
+                                    <div className="flex gap-1 shrink-0">
+                                        <Button size="sm" variant="outline" onClick={() => copyOne(t.token)} data-testid={`link-copy-${t.id}`}>
+                                            <Copy className="w-3.5 h-3.5 mr-1" /> Copy link
+                                        </Button>
+                                        <Button size="sm" variant="ghost" onClick={() => revoke(t.id)} data-testid={`link-revoke-${t.id}`} title="Revoke link">
+                                            <Trash2 className="w-4 h-4 text-destructive" />
+                                        </Button>
+                                    </div>
+                                </div>
+                                {/* Short path chip — what the staff member needs */}
+                                <code
+                                    className="block px-2 py-1 rounded font-mono text-sm font-semibold cursor-pointer select-all"
+                                    style={{ background: "hsl(var(--bg-elev))", color: "hsl(var(--primary))" }}
+                                    onClick={() => copyOne(t.token)}
+                                    data-testid={`link-short-${t.id}`}
+                                    title="Click to copy full link"
+                                >
+                                    /r/{t.token}
+                                </code>
+                                <div className="text-[10px] text-muted-foreground truncate select-all" title={fullUrl}>
+                                    {fullUrl}
+                                </div>
+                                <div className="text-[10px] text-muted-foreground italic">
+                                    Staff can bookmark this link.
+                                </div>
                             </div>
-                            <div className="flex gap-1">
-                                <Button size="sm" variant="ghost" onClick={() => copyOne(t.token)} data-testid={`link-copy-${t.id}`}><Copy className="w-4 h-4" /></Button>
-                                <Button size="sm" variant="ghost" onClick={() => revoke(t.id)} data-testid={`link-revoke-${t.id}`}><Trash2 className="w-4 h-4 text-destructive" /></Button>
-                            </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             </SheetContent>
         </Sheet>

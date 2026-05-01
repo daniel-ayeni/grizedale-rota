@@ -5,8 +5,11 @@ const STORAGE_KEY = "grizedale_theme";
 
 export function ThemeProvider({ children }) {
     const [theme, setTheme] = useState(() => {
+        // Returning users keep whatever they selected; brand-new visitors
+        // land on Modern by default (per user request 2026-05-01).
         const stored = localStorage.getItem(STORAGE_KEY);
-        return stored === "modern" ? "modern" : "paper";
+        if (stored === "paper" || stored === "modern") return stored;
+        return "modern";
     });
 
     useEffect(() => {

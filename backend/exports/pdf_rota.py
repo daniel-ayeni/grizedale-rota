@@ -38,7 +38,8 @@ SHIFT_TEXT = {
     "AL": colors.white, "TRN": colors.white,
     "OFF": colors.HexColor("#777"), "": colors.white,
 }
-# Display label override for AL/TRN to keep cells compact.
+# Display label override. AL/TRN keep their letters; OFF and "" render
+# as a fully blank cell to match the on-screen Paper-theme behaviour.
 SHIFT_LABEL = {"D": "D", "D*": "D*", "N": "N", "*": "*", "OFF": "", "": "", "AL": "AL", "TRN": "T"}
 
 DOW_LETTERS = ["M", "T", "W", "T", "F", "S", "S"]

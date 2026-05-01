@@ -3,7 +3,7 @@ import { useParams, Link, useSearchParams } from "react-router-dom";
 import {
     ArrowLeft, Lock, Unlock, RefreshCw, AlertTriangle,
     AlertCircle, Copy, Save, Sparkles, Loader2, X, Eraser,
-    FileDown, FileSpreadsheet, FlaskConical, Check, RotateCcw,
+    FileDown, FileSpreadsheet, Snowflake,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -90,17 +90,16 @@ export default function RotaEditor() {
     // Bulk-action confirmation modal state
     const [bulkConfirm, setBulkConfirm] = useState(null);  // { action, cells }
 
-    /* What-If mode (Phase 3b). When ON, cell edits go into a local
-       sandbox and don't persist until the manager clicks Apply. The
-       sandbox is keyed by `${date}|${initials}` and stores the
-       proposed shift only. Locked status is preserved from the saved
-       rota. Leave overrides are tracked separately so the solver
-       knows which dates to treat as AL/TRN regardless of what's in
-       the saved rota. */
-    const [whatIf, setWhatIf] = useState(false);
-    const [whatIfShifts, setWhatIfShifts] = useState({});  // { "date|init": shift }
-    const [whatIfLeave, setWhatIfLeave] = useState([]);  // [{staff_initials, date, type}]
-    const [whatIfBusy, setWhatIfBusy] = useState(false);
+    /* Freeze the leftmost identity column when scrolling horizontally
+       through the 28 day columns. Persisted to localStorage so the
+       manager's preference sticks across sessions. */
+    const [freezeCol, setFreezeCol] = useState(() => {
+        const stored = localStorage.getItem("rota_freeze_col");
+        return stored == null ? true : stored === "true";
+    });
+    useEffect(() => {
+        localStorage.setItem("rota_freeze_col", String(freezeCol));
+    }, [freezeCol]);
 
     const [exportingPdf, setExportingPdf] = useState(false);
     const [exportingXlsx, setExportingXlsx] = useState(false);
@@ -257,21 +256,8 @@ export default function RotaEditor() {
     const cellMap = useMemo(() => {
         const m = new Map();
         if (rota) for (const a of (rota.assignments || [])) m.set(`${a.date}|${a.staff_initials}`, a);
-        // Overlay what-if shifts on top of the saved state. Cells edited
-        // in what-if mode are NOT persisted until the manager clicks Apply.
-        for (const [k, sh] of Object.entries(whatIfShifts)) {
-            const [date, init] = k.split("|");
-            const existing = m.get(k) || { date, staff_initials: init, locked: false };
-            m.set(k, { ...existing, shift: sh, _whatif: true });
-        }
-        // Overlay what-if leave overrides as AL (or TRN) cells.
-        for (const lv of whatIfLeave) {
-            const k = `${lv.date}|${lv.staff_initials}`;
-            const existing = m.get(k) || { date: lv.date, staff_initials: lv.staff_initials, locked: false };
-            m.set(k, { ...existing, shift: lv.type || "AL", _whatif: true });
-        }
         return m;
-    }, [rota, whatIfShifts, whatIfLeave]);
+    }, [rota]);
 
     const onCallByDate = useMemo(() => {
         const m = new Map();
@@ -322,32 +308,11 @@ export default function RotaEditor() {
             return;
         }
         const newShift = nextShift(cur?.shift || "");
-        if (whatIf) {
-            // What-If mode: edit the local sandbox only, do NOT call API.
-            setWhatIfShifts((prev) => ({ ...prev, [k]: newShift }));
-            return;
-        }
         await patchCell(dateStr, init, newShift, cur?.locked || false);
     };
 
     const patchCell = async (dateStr, init, shift, locked, reason) => {
         const k = `${dateStr}|${init}`;
-        if (whatIf) {
-            // What-If mode: write to sandbox; locked changes are deferred
-            // until Apply (locked is rare during what-if exploration).
-            setWhatIfShifts((prev) => ({ ...prev, [k]: shift }));
-            // Track AL/TRN as a leave override so the solver treats them
-            // as forced unavailable when re-solving.
-            if (shift === "AL" || shift === "TRN") {
-                setWhatIfLeave((prev) => {
-                    const filtered = prev.filter((l) => !(l.staff_initials === init && l.date === dateStr));
-                    return [...filtered, { staff_initials: init, date: dateStr, type: shift }];
-                });
-            } else {
-                setWhatIfLeave((prev) => prev.filter((l) => !(l.staff_initials === init && l.date === dateStr)));
-            }
-            return;
-        }
         setBusyKey(k);
         try {
             const { data } = await api.patch(`/rotas/${id}/cell`, {
@@ -368,86 +333,6 @@ export default function RotaEditor() {
             setBusyKey(null);
         }
     };
-
-    /* What-If actions: re-solve, apply, discard. */
-    const buildWhatIfPayload = useCallback(() => {
-        // Snapshot of current effective rota = saved + what-if overlay.
-        const overlay = new Map();
-        for (const a of (rota?.assignments || [])) overlay.set(`${a.date}|${a.staff_initials}`, { ...a });
-        for (const [k, sh] of Object.entries(whatIfShifts)) {
-            const [date, init] = k.split("|");
-            const existing = overlay.get(k) || { date, staff_initials: init, locked: false };
-            overlay.set(k, { ...existing, shift: sh });
-        }
-        return {
-            assignments: Array.from(overlay.values()).map((a) => ({
-                date: a.date,
-                staff_initials: a.staff_initials,
-                shift: a.shift || "",
-                locked: !!a.locked,
-            })),
-            leave_overrides: whatIfLeave,
-        };
-    }, [rota, whatIfShifts, whatIfLeave]);
-
-    const whatifResolve = useCallback(async () => {
-        setWhatIfBusy(true);
-        try {
-            const { data } = await api.post(`/rotas/${id}/whatif`, buildWhatIfPayload());
-            if (!data.success) {
-                toast.error(`What-If: ${data.reason || "infeasible"}`);
-                return;
-            }
-            // Replace the what-if shifts with the solver's full solution.
-            const next = {};
-            const savedKeys = new Set((rota?.assignments || []).map((a) => `${a.date}|${a.staff_initials}`));
-            const savedByKey = new Map((rota?.assignments || []).map((a) => [`${a.date}|${a.staff_initials}`, a]));
-            for (const a of data.assignments) {
-                const k = `${a.date}|${a.staff_initials}`;
-                const orig = savedByKey.get(k);
-                // Only mark as "what-if changed" if the solver's output
-                // actually differs from the saved cell.
-                if (!orig || orig.shift !== a.shift) {
-                    next[k] = a.shift;
-                } else if (savedKeys.has(k)) {
-                    // unchanged — drop from sandbox so the diff indicator clears
-                }
-            }
-            setWhatIfShifts(next);
-            setViolations(data.validation_report?.violations || []);
-            toast.success(`What-If: ${data.solve_time_ms}ms · ${data.validation_report?.summary?.hard || 0} hard, ${data.validation_report?.summary?.soft || 0} soft`);
-        } catch (err) {
-            toast.error(formatApiError(err));
-        } finally {
-            setWhatIfBusy(false);
-        }
-    }, [id, rota, buildWhatIfPayload]);
-
-    const whatifApply = useCallback(async () => {
-        setWhatIfBusy(true);
-        try {
-            const { data } = await api.post(`/rotas/${id}/apply-whatif`, buildWhatIfPayload());
-            setRota(data);
-            setViolations(data.validation_report?.violations || []);
-            setWhatIfShifts({});
-            setWhatIfLeave([]);
-            setWhatIf(false);
-            toast.success("What-If applied — saved to rota");
-        } catch (err) {
-            toast.error(formatApiError(err));
-        } finally {
-            setWhatIfBusy(false);
-        }
-    }, [id, buildWhatIfPayload]);
-
-    const whatifDiscard = useCallback(() => {
-        setWhatIfShifts({});
-        setWhatIfLeave([]);
-        setWhatIf(false);
-        toast.info("What-If discarded");
-    }, []);
-
-    const whatifChangeCount = Object.keys(whatIfShifts).length + whatIfLeave.length;
 
     const setOnCall = async (dateStr, init) => {
         try {
@@ -554,55 +439,6 @@ export default function RotaEditor() {
 
     return (
         <div className="space-y-3" data-testid="rota-editor-page">
-            {/* What-If banner — pinned below the toolbar when sandbox is active */}
-            {whatIf && (
-                <div className="whatif-banner" data-testid="whatif-banner">
-                    <div className="whatif-banner-left">
-                        <FlaskConical className="w-4 h-4" />
-                        <span>
-                            <b>What-If mode</b> ·
-                            {" "}
-                            {whatifChangeCount === 0
-                                ? "no changes yet — edit cells to start"
-                                : `${whatifChangeCount} pending change${whatifChangeCount === 1 ? "" : "s"} (not saved)`}
-                        </span>
-                    </div>
-                    <div className="whatif-banner-right">
-                        <Button
-                            size="sm" variant="outline"
-                            onClick={whatifResolve}
-                            disabled={whatIfBusy}
-                            data-testid="whatif-resolve"
-                        >
-                            {whatIfBusy
-                                ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                                : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
-                            Re-solve now
-                        </Button>
-                        <Button
-                            size="sm"
-                            className="btn-primary"
-                            onClick={whatifApply}
-                            disabled={whatIfBusy || whatifChangeCount === 0}
-                            data-testid="whatif-apply"
-                        >
-                            <Check className="w-3.5 h-3.5 mr-1.5" />
-                            Apply changes
-                        </Button>
-                        <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={whatifDiscard}
-                            disabled={whatIfBusy}
-                            data-testid="whatif-discard"
-                        >
-                            <RotateCcw className="w-3.5 h-3.5 mr-1.5" />
-                            Discard
-                        </Button>
-                    </div>
-                </div>
-            )}
-
             {/* Slim toolbar above the grid */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -644,23 +480,17 @@ export default function RotaEditor() {
                         Excel
                     </Button>
                     <Button
-                        variant={whatIf ? "default" : "outline"}
+                        variant={freezeCol ? "default" : "outline"}
                         size="sm"
-                        className={whatIf ? "btn-whatif-active" : ""}
-                        onClick={() => {
-                            if (whatIf && whatifChangeCount > 0) {
-                                // Manager turning OFF What-If with pending changes → confirm.
-                                if (!window.confirm(`Discard ${whatifChangeCount} pending what-if change${whatifChangeCount === 1 ? "" : "s"}?`)) return;
-                                whatifDiscard();
-                            } else {
-                                setWhatIf((v) => !v);
-                                if (whatIf) { setWhatIfShifts({}); setWhatIfLeave([]); }
-                            }
-                        }}
-                        data-testid="rota-whatif-toggle"
+                        className={freezeCol ? "btn-primary" : ""}
+                        onClick={() => setFreezeCol((v) => !v)}
+                        title={freezeCol
+                            ? "Click to unfreeze the staff column"
+                            : "Click to freeze the staff column"}
+                        data-testid="rota-freeze-toggle"
                     >
-                        <FlaskConical className="w-3.5 h-3.5 mr-1.5" />
-                        What-If {whatIf ? "ON" : "OFF"}
+                        <Snowflake className="w-3.5 h-3.5 mr-1.5" />
+                        {freezeCol ? "Frozen" : "Unfrozen"}
                     </Button>
                     <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -744,7 +574,7 @@ export default function RotaEditor() {
 
             {/* Grid wrapper with horizontal scroll */}
             <TooltipProvider delayDuration={150}>
-                <div className="rota-grid-wrap" data-testid="rota-grid-wrap">
+                <div className={`rota-grid-wrap ${freezeCol ? "freeze-col" : ""}`} data-testid="rota-grid-wrap">
                     <div className="rota-grid" data-testid="rota-grid" data-violation-key={violationKey}>
                         {/* HEADER ROW 1 (NEW): week-lock chip row — one cell
                             per week spanning 7 day columns, prominent
@@ -1073,7 +903,7 @@ function StaffRow({ s, dateStrs, cellMap, onCallByDate, onClick, onPatch, onSetO
                 const onCall = onCallByDate.get(ds) === s.initials;
                 const isSelected = selected && selected.has(k);
 
-                const cellCls = `${shiftCellClass(shift)} ${locked ? "locked" : ""} ${hard ? "violation-hard" : ""} ${soft && !hard ? "violation-soft" : ""} ${isWeekEnd ? "week-divider" : ""} ${isSelected ? "selected" : ""} ${cell?._whatif ? "whatif-diff" : ""}`;
+                const cellCls = `${shiftCellClass(shift)} ${locked ? "locked" : ""} ${hard ? "violation-hard" : ""} ${soft && !hard ? "violation-soft" : ""} ${isWeekEnd ? "week-divider" : ""} ${isSelected ? "selected" : ""}`;
                 const busy = busyKey === k;
                 const isOnCallEditable = ON_CALL_STAFF.includes(s.initials);
 

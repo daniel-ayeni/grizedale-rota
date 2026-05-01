@@ -952,56 +952,26 @@ html[data-theme="modern"] .week-lock-btn.active {
 }
 
 /* =====================================================================
-   What-If sandbox banner + cell diff indicator
+   Frozen leftmost staff identity column (toggle in toolbar). Pins the
+   identity column + corner cells in place when scrolling horizontally
+   so the manager can always see whose row they're editing. Toggled
+   off via the "Unfrozen" button (preference persists in localStorage).
    ===================================================================== */
-.whatif-banner {
-    background: linear-gradient(90deg, hsl(180 70% 35% / 0.10), hsl(180 70% 45% / 0.04));
-    border: 1px solid hsl(180 70% 35% / 0.4);
-    border-left: 4px solid hsl(180 70% 35%);
-    border-radius: 8px;
-    padding: 10px 14px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.85rem;
-    color: hsl(var(--fg));
+.rota-grid-wrap.freeze-col .rota-corner-cell,
+.rota-grid-wrap.freeze-col .rota-corner-cell-bottom,
+.rota-grid-wrap.freeze-col .rota-identity-cell {
+    position: sticky;
+    left: 0;
+    z-index: 4;
+    /* Drop a subtle shadow on the right edge so the frozen column
+       reads as a separate layer when content scrolls behind it. */
+    box-shadow: 2px 0 4px -2px rgba(0, 0, 0, 0.12);
 }
-.whatif-banner-left {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: hsl(180 70% 25%);
+/* Corner cells need an extra bump so they overlap the staff identity
+   sticky cells (which only need z-index 4). */
+.rota-grid-wrap.freeze-col .rota-corner-cell {
+    z-index: 6;
 }
-html[data-theme="modern"] .whatif-banner-left { color: hsl(180 70% 65%); }
-.whatif-banner-right {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-.btn-whatif-active {
-    background: hsl(180 70% 35%) !important;
-    color: white !important;
-    border-color: hsl(180 70% 35%) !important;
-}
-.btn-whatif-active:hover { background: hsl(180 70% 30%) !important; }
-
-/* Cell diff indicator — small dot in the top-right corner of cells
-   whose what-if state differs from the saved rota state. Amber on
-   Paper theme, teal on Modern theme. */
-.shift-cell.whatif-diff::after {
-    content: "";
-    position: absolute;
-    top: 3px; right: 3px;
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: hsl(38 95% 55%);
-    box-shadow: 0 0 0 1.5px hsl(0 0% 100%);
-}
-html[data-theme="modern"] .shift-cell.whatif-diff::after {
-    background: hsl(180 70% 50%);
-    box-shadow: 0 0 0 1.5px hsl(var(--bg));
+.rota-grid-wrap.freeze-col .rota-corner-cell-bottom {
+    z-index: 5;
 }
