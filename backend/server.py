@@ -44,7 +44,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -867,6 +867,198 @@ async def generate_rota(rota_id: str, current=Depends(auth_required)):
         "locked_preserved": len(locked_keys),
         "leave_preserved": len(payload["leave"]),
     }
+
+
+# ============================================================================
+# Phase 4: Exports (PDF + Excel)
+# ============================================================================
+@api.get("/rotas/{rota_id}/export.pdf")
+async def export_rota_pdf(rota_id: str, current=Depends(auth_required)):
+    from exports.pdf_rota import render_rota_pdf
+    rota = await _load_rota(rota_id)
+    staff = await db.staff.find({"active": True}, {"_id": 0}).sort("initials", 1).to_list(100)
+    settings = await db.settings.find_one({}, {"_id": 0}) or {}
+    home_name = settings.get("home_name", "Grizedale")
+    pdf_bytes = render_rota_pdf(rota, staff, home_name=home_name)
+    fname = f"{home_name.lower()}-rota-{rota['start_date']}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api.get("/rotas/{rota_id}/export.xlsx")
+async def export_rota_xlsx(rota_id: str, current=Depends(auth_required)):
+    from exports.excel_rota import render_rota_xlsx
+    rota = await _load_rota(rota_id)
+    staff = await db.staff.find({"active": True}, {"_id": 0}).sort("initials", 1).to_list(100)
+    settings = await db.settings.find_one({}, {"_id": 0}) or {}
+    home_name = settings.get("home_name", "Grizedale")
+    xlsx_bytes = render_rota_xlsx(rota, staff, home_name=home_name)
+    fname = f"{home_name.lower()}-rota-{rota['start_date']}.xlsx"
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api.get("/holidays/export.pdf")
+async def export_holiday_pdf(
+    year: int = Query(default=2026),
+    current=Depends(auth_required),
+):
+    from exports.pdf_holiday import render_holiday_pdf
+    leave_rows = await db.leave.find(
+        {"date": {"$gte": f"{year}-01-01", "$lte": f"{year}-12-31"}},
+        {"_id": 0},
+    ).to_list(10000)
+    settings = await db.settings.find_one({}, {"_id": 0}) or {}
+    home_name = settings.get("home_name", "Grizedale")
+    public_holidays = settings.get("public_holidays") or []
+    pdf_bytes = render_holiday_pdf(year, leave_rows, public_holidays, home_name=home_name)
+    fname = f"{home_name.lower()}-holiday-sheet-{year}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ============================================================================
+# Phase 3b: What-If solve (read-only) + Apply (commit proposed state)
+# ============================================================================
+@api.post("/rotas/{rota_id}/whatif")
+async def whatif_solve(
+    rota_id: str,
+    body: dict[str, Any],
+    current=Depends(auth_required),
+):
+    """Run the solver against a proposed assignments + leave overrides
+    snapshot WITHOUT writing to Mongo. Returns the solver output and
+    validation report so the front-end can preview the result.
+
+    Body shape: {
+        "assignments": [{date, staff_initials, shift, locked}, ...],
+        "leave_overrides": [{staff_initials, date, type}, ...]  # additive
+    }
+    """
+    from solver_input_builder import build_solver_payload
+    from solver.rota_solver import solve_rota
+    from solver.rota_validator import validate_rota
+
+    rota = await _load_rota(rota_id)
+    proposed_assignments = body.get("assignments") or rota.get("assignments") or []
+    proposed_leave = body.get("leave_overrides") or []
+
+    # Build solver payload from current DB state, then OVERLAY the
+    # proposed assignments as locked cells + add leave overrides.
+    payload = await build_solver_payload(db, override_start_date=rota["start_date"])
+    payload["weeks"] = int(rota.get("weeks", 4))
+    # Only respect cells the manager has EXPLICITLY locked. Everything
+    # else is fair game for the solver to refill given the new leave
+    # overrides. Non-locked cells with a leave override become AL.
+    payload_locked: dict[tuple[str, str], dict] = {}
+    leave_override_keys = {(ov.get("staff_initials"), ov.get("date")) for ov in proposed_leave}
+    for a in proposed_assignments:
+        if not a.get("locked"):
+            continue
+        # Don't lock a cell that has a leave override on it — leave wins.
+        if (a["staff_initials"], a["date"]) in leave_override_keys:
+            continue
+        payload_locked[(a["staff_initials"], a["date"])] = {
+            "staff_initials": a["staff_initials"],
+            "date": a["date"],
+            "shift": a["shift"],
+        }
+    payload["locked_cells"] = list(payload_locked.values())
+    # Merge leave overrides on top of existing leave.
+    existing_leave_keys = {
+        (e["staff_initials"], e["date"]) for e in (payload.get("leave") or [])
+    }
+    for ov in proposed_leave:
+        if (ov.get("staff_initials"), ov.get("date")) in existing_leave_keys:
+            continue
+        payload.setdefault("leave", []).append({
+            "staff_initials": ov["staff_initials"],
+            "date": ov["date"],
+            "type": ov.get("type", "AL"),
+        })
+
+    result = solve_rota(payload, time_limit_s=15)
+    if not result.get("success"):
+        return {"success": False, "reason": result.get("reason"),
+                "blocking_constraints": result.get("blocking_constraints", [])}
+
+    # Build a candidate rota dict for validation
+    new_assignments = []
+    for day in result["rota"]:
+        for a in day["assignments"]:
+            new_assignments.append({
+                "date": day["date"],
+                "staff_initials": a["staff_initials"],
+                "shift": a["shift"],
+                "locked": (a["staff_initials"], day["date"]) in payload_locked,
+            })
+    candidate = dict(rota)
+    candidate["assignments"] = new_assignments
+    rules_doc = await db.rules_config.find_one({}, {"_id": 0}) or {}
+    rules_config = rules_doc.get("rules") or {}
+    staff_docs = await db.staff.find({"active": True}, {"_id": 0}).to_list(100)
+    violations = validate_rota(candidate, staff_docs, rules_config=rules_config)
+    summary = {"hard": sum(1 for v in violations if v.get("severity") == "hard"),
+               "soft": sum(1 for v in violations if v.get("severity") == "soft")}
+    return {
+        "success": True,
+        "assignments": new_assignments,
+        "soft_violations_score": result.get("soft_violations_score"),
+        "solve_time_ms": result.get("solve_time_ms"),
+        "validation_report": {"violations": violations, "summary": summary},
+    }
+
+
+@api.post("/rotas/{rota_id}/apply-whatif")
+async def apply_whatif(
+    rota_id: str,
+    body: dict[str, Any],
+    current=Depends(auth_required),
+):
+    """Persist a what-if snapshot as the rota's new assignments, plus
+    persist any leave overrides as fresh leave rows. After apply,
+    re-validate and return the updated rota."""
+    rota = await _load_rota(rota_id)
+    new_assignments = body.get("assignments") or []
+    leave_overrides = body.get("leave_overrides") or []
+
+    # Persist leave overrides idempotently.
+    for ov in leave_overrides:
+        try:
+            await db.leave.insert_one({
+                "id": str(uuid.uuid4()),
+                "staff_initials": ov["staff_initials"],
+                "date": ov["date"],
+                "type": ov.get("type", "AL"),
+                "notes": ov.get("notes", "via what-if"),
+                "created_at": _now(),
+            })
+            logger.info("LEAVE_INSERT staff=%s date=%s type=%s by=%s (whatif-apply)",
+                        ov["staff_initials"], ov["date"], ov.get("type", "AL"),
+                        (current or {}).get("email", "?"))
+        except Exception:
+            await db.leave.update_one(
+                {"staff_initials": ov["staff_initials"], "date": ov["date"]},
+                {"$set": {"type": ov.get("type", "AL")}},
+            )
+
+    await db.rotas.update_one(
+        {"id": rota_id},
+        {"$set": {"assignments": new_assignments, "updated_at": _now()}},
+    )
+    rota["assignments"] = new_assignments
+    rota["updated_at"] = _now()
+    rota["validation_report"] = await _validate_rota_doc(rota)
+    return rota
 
 
 # ============================================================================

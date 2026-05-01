@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Trash2, X, FileDown, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +27,7 @@ const TYPE_COLOURS = {
 export default function Holidays() {
     const [view, setView] = useState("year");
     const [year, setYear] = useState(2026);
+    const [exportingPdf, setExportingPdf] = useState(false);
     const [monthIdx, setMonthIdx] = useState(3); // April default
     const [leave, setLeave] = useState([]);
     const [holidays, setHolidays] = useState([]);
@@ -79,6 +80,32 @@ export default function Holidays() {
                     <Button variant="outline" size="icon" onClick={() => setYear((y) => y - 1)} data-testid="year-prev"><ChevronLeft className="w-4 h-4" /></Button>
                     <span className="text-sm font-semibold tabular-nums px-2" data-testid="year-label">{year}</span>
                     <Button variant="outline" size="icon" onClick={() => setYear((y) => y + 1)} data-testid="year-next"><ChevronRight className="w-4 h-4" /></Button>
+                    <Button
+                        variant="outline" size="sm"
+                        disabled={exportingPdf}
+                        onClick={async () => {
+                            setExportingPdf(true);
+                            try {
+                                const res = await api.get(`/holidays/export.pdf?year=${year}`, { responseType: "blob" });
+                                const blob = new Blob([res.data], { type: "application/pdf" });
+                                const url = window.URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `grizedale-holiday-sheet-${year}.pdf`;
+                                document.body.appendChild(a); a.click(); a.remove();
+                                setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+                                toast.success(`Holiday sheet ${year} downloaded`);
+                            } catch (err) {
+                                toast.error(formatApiError(err));
+                            } finally { setExportingPdf(false); }
+                        }}
+                        data-testid="holidays-export-pdf"
+                    >
+                        {exportingPdf
+                            ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                            : <FileDown className="w-3.5 h-3.5 mr-1.5" />}
+                        Export PDF
+                    </Button>
                 </div>
             </div>
 

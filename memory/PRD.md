@@ -20,12 +20,33 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 ## What's been implemented (latest first)
 
 ### 2026-05-01 — Consolidated batch (this session)
-- **Week-lock UX polish**: dedicated 3rd header row above day-letters with
-  prominent pill-button chips (🔒 W1/W2/W3/W4) per week; Tooltip shows the
-  week's date range; toggle behavior (click same chip twice to deselect);
-  Escape key clears any selection; cells in active selection have popover
-  + click-cycle disabled (bulk toolbar is the single edit channel while
-  multi-selecting).
+- **Phase 4 — Exports**:
+  - `GET /api/rotas/{id}/export.pdf` — A3 landscape PDF rendered with
+    ReportLab, mirrors the Paper-theme grid (italic blue title, peach
+    headers, coloured shift cells, week dividers, locked-cell red
+    borders, legend strip, footer with status + timestamp).
+  - `GET /api/rotas/{id}/export.xlsx` — two-sheet workbook (openpyxl):
+    "Rota" with coloured cells + frozen panes, "Summary" with per-staff
+    totals (D, D*, N, *, AL, TRN, total hours, target, variance).
+  - `GET /api/holidays/export.pdf?year=YYYY` — A4 portrait yearly grid
+    (12 mini-month tables, AL/TRN coloured, public-holiday band,
+    legend, footer).
+  - Frontend buttons added to RotaEditor toolbar (PDF + Excel) and
+    Holidays page header (Export PDF). Auth-aware blob download.
+- **Phase 3b — What-If sandbox**:
+  - `POST /api/rotas/{id}/whatif` — read-only solve over current rota +
+    proposed shift edits + leave overrides. No DB write.
+  - `POST /api/rotas/{id}/apply-whatif` — persists the proposed state
+    as the new rota (and any leave overrides as fresh leave rows).
+  - Frontend: "What-If OFF/ON" toggle in toolbar, teal banner with
+    Re-solve / Apply / Discard actions, amber-dot diff indicator on
+    every cell that differs from the saved state. Edits while sandbox
+    is active route to local state, never to the API.
+- **Week-lock UX polish (earlier in session)**: dedicated 3rd header
+  row above day-letters with prominent pill-button chips per week;
+  Tooltip shows the week's date range; toggle behavior; Escape clears
+  selection; cells in active selection toggle out of the selection
+  on click (curate-by-click); bulk toolbar pinned sticky-bottom.
 - **AL exemption across all per-week / per-day rules**:
   `weekday_weekend_split`, `senior_weekend_cover` (hard), `senior_monday_cover`,
   `min_sleepover_per_week_for_seniors` (5→3 threshold + scaling),
