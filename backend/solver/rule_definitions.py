@@ -12,6 +12,14 @@ Each rule has:
     severity_default  "hard" | "soft" | "off"
     immovable       True if mode cannot be changed by user
     weight_default  used when severity = soft
+
+No staff-initial string literals appear in this file — every rule that
+refers to "seniors" / "flexis" etc. resolves the actual initials from
+the per-staff role flags (`is_senior`, `is_flexi`, `is_night`,
+`is_manager`, `is_deputy`). Initial `params_default` is kept as an
+EMPTY template so the solver & validator dynamically derive the
+staff list from role flags — managers can hire/fire/promote without
+touching code or DB migrations.
 """
 
 from __future__ import annotations
@@ -83,8 +91,8 @@ RULES: list[dict] = [
     },
     {
         "id": "manager_no_shifts",
-        "name": "Manager (J.C.) does not work shifts",
-        "description": "Admin-only staff are excluded from rota shifts unless explicitly locked.",
+        "name": "Manager / admin-only staff do not work shifts",
+        "description": "Staff flagged `is_manager` or `is_admin_only` are excluded from rota shifts unless explicitly locked. Works off role flags — promote any staff to Manager on /staff to have this rule apply to them.",
         "severity_default": "hard",
         "immovable": False,
         "weight_default": 100000,
@@ -148,7 +156,7 @@ RULES: list[dict] = [
     {
         "id": "overtime_prefer_flexi",
         "name": "Overtime preference → flexi staff",
-        "description": "When extra hours are needed above contracted minimums, prefer giving them to staff with the Flexi role (auto-detected). Use staff_initials_override to narrow it further.",
+        "description": "When extra hours are needed above contracted minimums, prefer giving them to staff with the Flexi role (auto-detected via `is_flexi` flag or `role == Flexi`). Use staff_initials_override to narrow it further.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 15,
@@ -177,15 +185,15 @@ RULES: list[dict] = [
     {
         "id": "senior_weekend_cover",
         "name": "Senior on every weekend",
-        "description": "Each Saturday and Sunday must have at least one of L.M. (Deputy) or L.D. (Senior Care Support) on a D or D* shift. Rotation pattern (per week) is a soft preference.",
+        "description": "Each Saturday and Sunday must have at least one staff flagged `is_senior` on a D or D* shift. Rotation pattern (per week) is a soft preference. Works off role flags — add/remove seniors on /staff.",
         "severity_default": "hard",
         "immovable": True,
         "weight_default": 0,
     },
     {
         "id": "avoid_pair_seniors",
-        "name": "Avoid pairing L.M. and L.D. on the same shift",
-        "description": "Manager prefers to split L.M. and L.D. so each pairs with other staff. Penalty when both are on the same working day (D or D*).",
+        "name": "Avoid pairing two seniors on the same shift",
+        "description": "When two staff carry the `is_senior` flag, the manager prefers to split them so each pairs with other staff. Penalty when both are on the same working day (D or D*).",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 40,
@@ -193,15 +201,12 @@ RULES: list[dict] = [
     {
         "id": "min_sleepover_per_week_for_seniors",
         "name": "Minimum D* per week (per-staff)",
-        "description": "Per-staff floor on D* (sleepover-day) shifts each week. Default: L.M./L.D. ≥ 2 (their core weekday rhythm), T.D. ≥ 1. Manager can edit the per-staff minimums via Rules UI. Skips weeks where staff has ≥5 AL/TRN days.",
+        "description": "Per-staff floor on D* (sleepover-day) shifts each week. Default template is empty — add rule entries via the Rules UI (pick staff, pick min/week). Skips weeks where staff has ≥3 AL/TRN days.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 400,
         "params_default": {
-            "rules": [
-                {"staff_initials": ["L.M.", "L.D."], "min_per_week": 2},
-                {"staff_initials": ["T.D."], "min_per_week": 1},
-            ],
+            "rules": [],
         },
     },
     {
@@ -215,12 +220,13 @@ RULES: list[dict] = [
     {
         "id": "senior_monday_cover",
         "name": "Senior on every Monday",
-        "description": "Each Monday should have at least one senior (default L.M. or L.D.) on a working shift. Soft default with strong weight — manager can flip to Hard for strict enforcement.",
+        "description": "Each Monday should have at least one staff flagged `is_senior` on a working shift. Soft default with strong weight — manager can flip to Hard for strict enforcement. Staff list auto-derives from the `is_senior` role flag unless overridden via params.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 60,
         "params_default": {
-            "staff_initials": ["L.M.", "L.D."],
+            # Empty override → solver / validator auto-derive from is_senior flag.
+            "staff_initials": [],
         },
     },
     {
@@ -242,37 +248,38 @@ RULES: list[dict] = [
     {
         "id": "avoid_star_then_day",
         "name": "Avoid sleepover-only (*) followed by day shift (D)",
-        "description": "After `*` the staff has just slept at the home and a D the next day cuts into their rest. Per-staff overrides allow a stronger weight for staff who especially dislike this pattern (e.g. L.D.).",
+        "description": "After `*` the staff has just slept at the home and a D the next day cuts into their rest. Per-staff overrides allow a stronger weight for staff who especially dislike this pattern. When no overrides are set, senior-flagged staff automatically get the stronger weight.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 20,
         "params_default": {
             "general_weight": 20,
-            "staff_overrides": {"L.D.": 60, "L.M.": 60},
+            # Empty overrides → solver auto-applies the stronger weight (60)
+            # to every staff flagged `is_senior`.
+            "staff_overrides": {},
         },
     },
     {
         "id": "avoid_star_for_staff",
         "name": "Avoid sleepover-only (*) for specific staff",
-        "description": "Listed staff do not like working a bare `*` (sleepover-only, no day shift). They're fine with D or D*, but `*` alone is unwanted. Soft penalty per `*` assigned to them.",
+        "description": "Listed staff do not like working a bare `*` (sleepover-only, no day shift). They're fine with D or D*, but `*` alone is unwanted. Soft penalty per `*` assigned to them. Empty list → solver auto-applies to every staff flagged `is_senior`.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 50,
         "params_default": {
-            "staff_initials": ["L.M.", "L.D.", "T.D."],
+            # Empty → solver auto-derives from `is_senior` role flag.
+            "staff_initials": [],
         },
     },
     {
         "id": "max_sleepover_per_week",
         "name": "Maximum sleepovers (D*) per week (cap)",
-        "description": "For each listed staff, cap the number of D* shifts per week. Soft penalty per D* above the configured maximum. Useful for staff who only want one sleepover-day each week (e.g. T.D. → max 1).",
+        "description": "For each listed staff, cap the number of D* shifts per week. Soft penalty per D* above the configured maximum. Add rule entries via the Rules UI (pick staff, pick max/week).",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 80,
         "params_default": {
-            "rules": [
-                {"staff_initials": ["T.D."], "max_per_week": 1},
-            ],
+            "rules": [],
         },
     },
     {
@@ -286,37 +293,23 @@ RULES: list[dict] = [
     {
         "id": "weekday_weekend_split",
         "name": "Weekday / weekend split per week",
-        "description": "Per-staff target count of working shifts on weekdays (Mon-Fri) AND weekend days (Sat-Sun) per week. Useful for staff who prefer e.g. exactly 1 weekday and 1 weekend shift each week (J.R.'s default). Auto-skips a sub-window when 0 days are available (AL / TRN cover the whole sub-window).",
+        "description": "Per-staff target count of working shifts on weekdays (Mon-Fri) AND weekend days (Sat-Sun) per week. Useful for staff who prefer e.g. exactly 1 weekday and 1 weekend shift each week. Add rule entries via the Rules UI. Auto-skips a sub-window when 0 days are available (AL / TRN cover the whole sub-window).",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 40,
         "params_default": {
-            "rules": [
-                {
-                    "staff_initials": ["J.R."],
-                    "weekday_target": 1,
-                    "weekend_target": 1,
-                    "shift_types": ["N"],
-                },
-            ],
+            "rules": [],
         },
     },
     {
         "id": "pair_companion_on_day",
         "name": "Pair a focal staff with a companion on a specific weekday",
-        "description": "If the focal staff works a day shift on the configured weekday (e.g. C.E. on Wed), at least one of the listed companions must also be working a day shift that same day. Auto-skips when the focal is on AL/TRN that date or when all companions are on AL/TRN.",
+        "description": "If the focal staff works a day shift on the configured weekday (e.g. some staff member on Wed), at least one of the listed companions must also be working a day shift that same day. Auto-skips when the focal is on AL/TRN that date or when all companions are on AL/TRN.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 200,
         "params_default": {
-            "rules": [
-                {
-                    "staff_initials": "C.E.",
-                    "companion_initials": ["L.M.", "L.D.", "D.A."],
-                    "day_of_week": "Wed",
-                    "shift_types": ["D", "D*"],
-                },
-            ],
+            "rules": [],
         },
     },
 ]
@@ -324,9 +317,18 @@ RULES: list[dict] = [
 RULES_BY_ID = {r["id"]: r for r in RULES}
 
 
-def default_rules_config() -> dict:
-    """Return the default rules_config doc used by the seeder."""
-    out = {}
+def default_rules_config(staff_list: list[dict] | None = None) -> dict:
+    """Return the default rules_config doc used by the seeder.
+
+    When `staff_list` is provided, rules whose params depend on role
+    membership (seniors, flexis, nights) are pre-populated from the
+    per-staff role flags (is_senior / is_flexi / is_night). When not
+    provided, the rules fall back to their empty params template and
+    the solver / validator derive the staff list at solve time.
+    """
+    staff_list = staff_list or []
+    seniors = [s["initials"] for s in staff_list if s.get("is_senior")]
+    out: dict[str, dict] = {}
     for r in RULES:
         entry = {
             "mode": r["severity_default"],
@@ -335,5 +337,26 @@ def default_rules_config() -> dict:
         }
         if r.get("params_default"):
             entry["params"] = dict(r["params_default"])
+
+        # Inject role-derived initials for rules that refer to seniors.
+        # These writes are deterministic from the staff role flags so
+        # the solver / validator read pre-populated config for Grizedale
+        # and equivalent pre-populated config for any other care home.
+        if seniors:
+            if r["id"] == "senior_monday_cover":
+                entry["params"] = {"staff_initials": list(seniors)}
+            elif r["id"] == "avoid_star_for_staff":
+                entry["params"] = {"staff_initials": list(seniors)}
+            elif r["id"] == "avoid_star_then_day":
+                entry["params"] = {
+                    "general_weight": 20,
+                    "staff_overrides": {s: 60 for s in seniors},
+                }
+            elif r["id"] == "min_sleepover_per_week_for_seniors":
+                entry["params"] = {
+                    "rules": [
+                        {"staff_initials": list(seniors), "min_per_week": 2},
+                    ],
+                }
         out[r["id"]] = entry
     return out

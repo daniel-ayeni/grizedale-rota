@@ -338,9 +338,14 @@ async def seed_if_empty(db) -> dict:
 
     # rules_config (single doc)
     if await db.rules_config.count_documents({}) == 0:
+        # Pass the freshly-seeded staff docs to default_rules_config so
+        # role-flag-dependent rules (min_sleepover_for_seniors, etc.)
+        # are pre-populated with the initials of flagged seniors. This
+        # keeps the rule_definitions module free of initial literals.
+        seed_staff = await db.staff.find({}, {"_id": 0}).to_list(1000)
         rules_doc = {
             "id": "rules_singleton",
-            "rules": default_rules_config(),
+            "rules": default_rules_config(seed_staff),
             "updated_at": _now_iso(),
         }
         await db.rules_config.insert_one(rules_doc)

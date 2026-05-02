@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 7 — End-to-end testing of (1) de-hardcoded solver, (2) role-flag chips + staff delete dialog, (3) override-conflict dialog on /requests with audit log. ALL 10 PYTEST + ALL FRONTEND CHECKS PASS. grep for staff-initial literals in rota_solver.py / rota_validator.py / rule_definitions.py returns ZERO hits. solver/test_runner.py runs clean. POST /api/solver/generate succeeds in <15s. /api/staff returns 8 with complete role flags (J.C.=mgr, L.M.=dep+sen, L.D.=sen, D.A./T.D.=flexi, C.E./A.A./J.R.=night). PUT /api/staff/{id} persists a single-flag patch. GET /api/staff/{id}/references returns leave_count/assignments_count/requests_count/active_tokens_count + rule_references[{rule_id,mode}]. PATCH /api/requests/{id} status=accepted on a clashing row returns 409 with detail={error,reason,existing_leave}; with override_conflict=true but missing reason returns 422; with both fields returns 200 and writes a row to audit_log (GET /api/audit-log?action=override_conflict returns reverse-chron rows with actor_email=manager@grizedale.local). POST /api/requests/bulk returns {updated,skipped_conflicts} and pushes all rows through when override_conflict+reason supplied. Public /check endpoint regression OK. Frontend: Staff page renders MGR/DEP/SEN/FLX/NGT color-coded chips; toggle surfaces toast and persists. StaffDeleteDialog fetches /references and shows counts + 'I understand' ack checkbox. Requests page shows '✓ Open' or '⚠ <initials>' Conflicts badge; clicking Accept on a clashing row opens OverrideConflictDialog with reason textarea + ack checkbox (confirm disabled until both filled); confirming writes PATCH with override fields and creates audit row.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Sidebar footer",
+        "issues": ["Still reads 'Phase 2 · v0.3.0' — unchanged from iter_5/6. Bump to 'Phase 3 · v0.4.0' or similar to reflect dehardcoding + chips + override-dialog release."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_dehardcode.py",
+    "/app/test_reports/pytest/dehardcode_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: bump sidebar footer version string.",
+    "OPTIONAL: /api/leave POST accepts only {dates:[...]} (array) — if single-date callers exist elsewhere, they should use the array form. Verified working in this test suite."
+  ],
+  "critical_code_review_comments": [
+    "De-hardcoding complete: _derive_role_staff() drives every rule; grep for staff initials in the three solver files returns zero matches.",
+    "server.py /api/requests/{id} PATCH cleanly separates 409 (no override) from 422 (override without reason) from 200 (override with reason). _log_audit writes non-fatally.",
+    "StaffDeleteDialog correctly uses /references counts + rule_references list with SOFT/HARD badges; ack checkbox gates the Delete button.",
+    "OverrideConflictDialog correctly disables confirm until reason + ack both filled, and forwards override_conflict/override_reason on both single-patch and bulk paths.",
+    "/api/requests/bulk contract (updated[] + skipped_conflicts[]) is consistent with the single-patch path and matches the spec.",
+    "Audit rows sort reverse-chron via timestamp server-side — verified."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_dehardcode.py",
+    "/app/test_reports/pytest/dehardcode_results.xml",
+    "/app/test_reports/iteration_7.json"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 pytest)",
+    "frontend": "100% (staff chips toggle + toast, StaffDeleteDialog references fetch + ack gate, Requests Conflicts column badge, OverrideConflictDialog ack+reason gate, PATCH override flow, audit log row verified)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "Ephemeral D.A. AL + T.D. pending OFF request on 2026-07-13 / 2026-08-12 / 2026-09-xx for override flow tests; A.A. + T.D. pending requests for bulk test. All created/deleted per-test within finally blocks. Any OFF_REQ leave spawned by an accepted override is also swept by cleanup. No production data mutated. Audit rows are NOT cleaned up (by design — they are immutable audit history).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend && REACT_APP_BACKEND_URL=<public_url> python -m pytest tests/test_phase_dehardcode.py -v. Wall time ~6s. Test classes: TestSolverDehardcoded (grep + solver run), TestStaffFlags (list + PUT toggle + /references), TestOverrideConflict (409/422/200 + audit), TestBulkAccept (updated + skipped_conflicts), TestPublicCheck (regression on public /check). Frontend checks already executed via playwright — see iteration_7 summary for chip toggle + toast, delete dialog refs fetch, override dialog ack+reason gate, and audit row creation through UI. The /api/leave endpoint signature is {staff_initials, dates:[...], type, notes} — not 'date' singular.",
+  "rca_of_the_issue": "N/A — all items implemented as specified in the review_request and verified end-to-end."
+}

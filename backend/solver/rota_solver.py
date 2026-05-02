@@ -116,25 +116,26 @@ DEFAULT_RULE_MODES = {
 }
 
 # ---------------------------------------------------------------------------
-# Legacy fallback — only used when the staff collection hasn't been migrated
-# to carry the `is_senior` flag yet. New code path auto-detects seniors via
-# `_derive_senior_staff(staff_list)` so roles/initials aren't hard-coded.
-SENIOR_STAFF_FALLBACK = ("L.M.", "L.D.")
+# Role-flag derivation — all "who counts as a senior / flexi / night / admin"
+# lookups flow from the per-staff role flags (is_senior, is_flexi, is_night,
+# is_manager, is_admin_only). This keeps the solver free of ANY hard-coded
+# staff initials. Managers toggle the flags on /staff and the solver picks
+# up the changes on the next solve. Empty fallback = rule simply doesn't
+# apply when no staff carries the flag.
 
 
-def _derive_senior_staff(staff_list: list[dict]) -> tuple[str, ...]:
-    """Return the initials of staff flagged `is_senior: True`.
+def _derive_role_staff(staff_list: list[dict], flag: str) -> tuple[str, ...]:
+    """Return the initials of every staff member carrying `flag=True`.
 
-    If no staff carries the flag (legacy / unmigrated data) fall back
-    to the historic hard-coded pair so the solver still works. The
-    seeder migrates existing staff to set the flag on L.M. and L.D. at
-    boot time. Managers can toggle the flag per-staff on /staff.
+    Example:
+        _derive_role_staff(staff_list, "is_senior") → initials of all
+        staff the manager has flagged as senior.
+
+    An empty tuple is returned when no staff carries the flag; the calling
+    rule then self-disables (no-op) instead of applying to a hard-coded
+    default, so the solver never references nonexistent staff.
     """
-    flagged = tuple(s["initials"] for s in staff_list if s.get("is_senior"))
-    return flagged or SENIOR_STAFF_FALLBACK
-
-
-SENIOR_STAFF = SENIOR_STAFF_FALLBACK  # kept as a module-level default
+    return tuple(s["initials"] for s in staff_list if s.get(flag))
 
 DOW_FROM_STR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -274,12 +275,14 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             if forced != "TRN":
                 model.Add(x[s][di]["TRN"] == 0)
 
-    # Manager hard rule: J.C. (or any is_admin_only) cannot work shifts
-    # unless cell is locked.
+    # Manager hard rule: any staff flagged `is_admin_only` or `is_manager`
+    # cannot work shifts unless the cell is explicitly locked. This fires
+    # off the per-staff role flag (set on /staff) so ANY staff can be
+    # promoted to Manager without code changes.
     if modes["manager_no_shifts"] == "hard":
         for s in staff_inits:
             info = staff_by[s]
-            if not info.get("is_admin_only"):
+            if not (info.get("is_admin_only") or info.get("is_manager")):
                 continue
             for di in range(n_days):
                 d_str = days[di].isoformat()
@@ -485,10 +488,11 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
             elif not accepts_ot:
                 # Staff explicitly opted out of overtime — hard cap at +12h
                 # above target keeps the rota feasible under multi-day
-                # Flexi AL scenarios while preventing the worst-case "T.D.
-                # gets 62h alone" pin. The strong soft penalty (150/h)
-                # discourages any overage. Note: tighter caps (e.g. +8)
-                # were tried but caused INFEASIBLE under D.A. AL all w2.
+                # Flexi AL scenarios while preventing the worst-case
+                # "opt-out staff accidentally carrying 62h alone" pin.
+                # The strong soft penalty (150/h) discourages any
+                # overage. Note: tighter caps (e.g. +8) were tried but
+                # caused INFEASIBLE under multi-day Flexi AL.
                 model.Add(over_w <= 12)
                 soft_terms.append(weights["non_flexi_overage"] * over_w)
                 soft_terms.append(100 * over_w)
@@ -621,9 +625,9 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     # Rotation (preferred senior per week) is a SOFT nudge on top.
     # -----------------------------------------------------------------
     senior_mode = modes.get("senior_weekend_cover", "hard")
-    # De-hardcoded: derive senior list from staff `is_senior` flag;
-    # falls back to historic ("L.M.", "L.D.") if no staff carries it.
-    seniors_active = _derive_senior_staff(payload["staff"])
+    # De-hardcoded: derive senior list from staff `is_senior` flag —
+    # empty tuple means rule simply doesn't apply.
+    seniors_active = _derive_role_staff(payload["staff"], "is_senior")
     present_seniors = [s for s in seniors_active if s in staff_by]
     if senior_mode != "off" and present_seniors:
         for di, dt in enumerate(days):
@@ -702,8 +706,11 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
         if "rules" in msl_params:
             msl_rules = msl_params.get("rules") or []
         else:
+            # Legacy shape — fall back to role-derived seniors so the
+            # rule keeps working on unmigrated configs.
+            legacy_inits = msl_params.get("staff_initials") or list(_derive_role_staff(staff_list, "is_senior"))
             msl_rules = [{
-                "staff_initials": msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."],
+                "staff_initials": legacy_inits,
                 "min_per_week": msl_params.get("min_sleepovers_per_week", 1),
             }]
         for rule_entry in msl_rules:
@@ -748,7 +755,9 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     smc_mode = modes.get("senior_monday_cover", "soft")
     if smc_mode != "off":
         smc_params = rule_params.get("senior_monday_cover") or {}
-        smc_staff = [s for s in (smc_params.get("staff_initials") or ["L.M.", "L.D."])
+        # Role-derived fallback — list of seniors flagged `is_senior`.
+        smc_default = list(_derive_role_staff(staff_list, "is_senior"))
+        smc_staff = [s for s in (smc_params.get("staff_initials") or smc_default)
                      if s in staff_by]
         if smc_staff:
             for di, dt in enumerate(days):
@@ -804,7 +813,10 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     if asn_mode != "off" or asd_mode != "off":
         asd_params = rule_params.get("avoid_star_then_day") or {}
         asd_general = int(asd_params.get("general_weight", weights["avoid_star_then_day"]))
-        asd_overrides = asd_params.get("staff_overrides") or {"L.D.": 60, "L.M.": 60}
+        # Role-derived fallback: seniors get the stronger per-staff weight
+        # (they dislike *→D more strongly than general staff).
+        senior_overrides = {s: 60 for s in _derive_role_staff(staff_list, "is_senior")}
+        asd_overrides = asd_params.get("staff_overrides") or senior_overrides
         for s in staff_inits:
             for di in range(n_days - 1):
                 # *→N
@@ -835,7 +847,9 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     asfs_staff: list[str] = []
     if asfs_mode != "off":
         asfs_params = rule_params.get("avoid_star_for_staff") or {}
-        asfs_staff = [s for s in (asfs_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
+        # Role-derived fallback: seniors dislike bare `*` by default.
+        asfs_default = list(_derive_role_staff(staff_list, "is_senior"))
+        asfs_staff = [s for s in (asfs_params.get("staff_initials") or asfs_default)
                       if s in staff_by]
         for s in asfs_staff:
             for di in range(n_days):
@@ -1089,8 +1103,8 @@ def _build_failure_response(status, payload, elapsed_ms, forced_cells):
             if d == d_str and shift in {"AL", "TRN", "OFF"}:
                 unavailable.add(init)
         avail = [s for s in staff_by.values() if s["initials"] not in unavailable]
-        # Manager treated as unavailable for solver purposes
-        avail_for_shifts = [s for s in avail if not s.get("is_admin_only")]
+        # Manager / admin-only staff treated as unavailable for solver purposes
+        avail_for_shifts = [s for s in avail if not (s.get("is_admin_only") or s.get("is_manager"))]
         day_cap = [s for s in avail_for_shifts if s.get("can_do_days")]
         night_cap = [s for s in avail_for_shifts if s.get("can_do_nights") or s.get("can_do_sleepover")]
         med_day = [s for s in day_cap if s.get("medication_competent")]

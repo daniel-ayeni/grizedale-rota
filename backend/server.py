@@ -239,12 +239,16 @@ class RequestIn(BaseModel):
 class RequestPatch(BaseModel):
     status: str | None = None
     resolution_note: str | None = None
+    override_conflict: bool = False
+    override_reason: str | None = None
 
 
 class RequestBulkPatch(BaseModel):
     ids: list[str]
     status: str
     resolution_note: str | None = None
+    override_conflict: bool = False
+    override_reason: str | None = None
 
 
 class TokenCreate(BaseModel):
@@ -1279,16 +1283,58 @@ async def create_request(payload: RequestIn, current=Depends(auth_required)):
     return _strip_id(doc)
 
 
-async def _resolve_request(req: dict, status: str, resolution_note: str | None) -> dict:
+async def _log_audit(
+    actor_email: str,
+    action: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Insert a row into the `audit_log` collection. Non-fatal — failures
+    are logged but never raise so the main request flow continues.
+
+    Schema: {id, actor_email, action, details, timestamp}
+    """
+    try:
+        await db.audit_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "actor_email": actor_email or "unknown",
+            "action": action,
+            "details": details or {},
+            "timestamp": _now(),
+        })
+    except Exception as exc:
+        logger.warning("audit_log insert failed (%s): %s", action, exc)
+
+
+async def _resolve_request(
+    req: dict,
+    status: str,
+    resolution_note: str | None,
+    *,
+    actor_email: str = "",
+    override_conflict: bool = False,
+    override_reason: str | None = None,
+) -> dict:
     update = {
         "status": status,
         "resolution_note": resolution_note,
         "resolved_at": _now(),
     }
+    if override_conflict:
+        update["override_conflict"] = True
+        update["override_reason"] = override_reason or ""
     res = await db.requests.find_one_and_update(
         {"id": req["id"]}, {"$set": update},
         return_document=True, projection={"_id": 0},
     )
+    # Audit the override when one was recorded.
+    if override_conflict and status == "accepted":
+        await _log_audit(actor_email, "override_conflict", {
+            "request_id": req.get("id"),
+            "staff_initials": req.get("staff_initials"),
+            "date": req.get("date"),
+            "shift_preference": req.get("shift_preference"),
+            "reason": override_reason or "",
+        })
     # If accepted + OFF preference, upsert a leave row of type OFF_REQ
     # (overwrites any existing AL/TRN entry for the same staff+date).
     if (
@@ -1326,7 +1372,35 @@ async def patch_request(req_id: str, patch: RequestPatch, current=Depends(auth_r
     if not existing:
         raise HTTPException(status_code=404, detail="Request not found")
     if patch.status:
-        return await _resolve_request(existing, patch.status, patch.resolution_note)
+        # Accept path — enforce max_one_per_role_on_al unless the manager
+        # has explicitly ticked `override_conflict` + supplied a reason.
+        if patch.status == "accepted":
+            conflict = await _check_leave_slot(
+                existing.get("staff_initials", ""),
+                existing.get("date", ""),
+                existing.get("shift_preference", "") or "",
+            )
+            if not conflict.get("slot_open"):
+                if not patch.override_conflict:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "conflict",
+                            "reason": conflict.get("reason") or "Slot taken",
+                            "existing_leave": conflict.get("existing_leave") or [],
+                        },
+                    )
+                if not (patch.override_reason and patch.override_reason.strip()):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="override_reason is required when override_conflict=true",
+                    )
+        return await _resolve_request(
+            existing, patch.status, patch.resolution_note,
+            actor_email=(current or {}).get("email", ""),
+            override_conflict=patch.override_conflict,
+            override_reason=patch.override_reason,
+        )
     update = {k: v for k, v in patch.model_dump().items() if v is not None}
     res = await db.requests.find_one_and_update(
         {"id": req_id}, {"$set": update},
@@ -1337,20 +1411,98 @@ async def patch_request(req_id: str, patch: RequestPatch, current=Depends(auth_r
 
 @api.post("/requests/bulk")
 async def bulk_patch_requests(payload: RequestBulkPatch, current=Depends(auth_required)):
-    updated = []
+    """Bulk-resolve requests.
+
+    When `status=accepted`, every candidate is pre-checked against
+    `max_one_per_role_on_al`. Conflicting requests are SKIPPED unless
+    the caller supplies `override_conflict=true` + `override_reason`;
+    in that case each conflict is resolved with an override log entry.
+
+    Response shape:
+        {
+            "updated": [...requests...],
+            "leave_created": int,
+            "skipped_conflicts": [
+                {"request_id": ..., "reason": ..., "existing_leave": [...]},
+                ...
+            ],
+        }
+    """
+    updated: list[dict] = []
+    skipped_conflicts: list[dict] = []
     leave_created = 0
+    actor_email = (current or {}).get("email", "")
+
+    if payload.status == "accepted" and payload.override_conflict and not (
+        payload.override_reason and payload.override_reason.strip()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="override_reason is required when override_conflict=true",
+        )
+
     for rid in payload.ids:
         existing = await db.requests.find_one({"id": rid}, {"_id": 0})
         if not existing:
             continue
+
+        # On accept, check for conflicts. If override_conflict is false
+        # and a conflict exists, skip that row (manager will re-submit
+        # with override). If override_conflict=true, proceed with the
+        # override logged to audit_log.
+        if payload.status == "accepted":
+            conflict = await _check_leave_slot(
+                existing.get("staff_initials", ""),
+                existing.get("date", ""),
+                existing.get("shift_preference", "") or "",
+            )
+            if not conflict.get("slot_open") and not payload.override_conflict:
+                skipped_conflicts.append({
+                    "request_id": rid,
+                    "staff_initials": existing.get("staff_initials"),
+                    "date": existing.get("date"),
+                    "reason": conflict.get("reason") or "Slot taken",
+                    "existing_leave": conflict.get("existing_leave") or [],
+                })
+                continue
+
+            override_for_this = payload.override_conflict and not conflict.get("slot_open")
+        else:
+            override_for_this = False
+
         before_leave_count = await db.leave.count_documents({})
-        result = await _resolve_request(existing, payload.status, payload.resolution_note)
+        result = await _resolve_request(
+            existing, payload.status, payload.resolution_note,
+            actor_email=actor_email,
+            override_conflict=override_for_this,
+            override_reason=payload.override_reason,
+        )
         after_leave_count = await db.leave.count_documents({})
         if after_leave_count > before_leave_count:
             leave_created += 1
         if result:
             updated.append(result)
-    return {"updated": updated, "leave_created": leave_created}
+    return {
+        "updated": updated,
+        "leave_created": leave_created,
+        "skipped_conflicts": skipped_conflicts,
+    }
+
+
+@api.get("/audit-log")
+async def list_audit_log(
+    current=Depends(auth_required),
+    action: str | None = None,
+    limit: int = 200,
+):
+    """Return the most recent audit entries (descending timestamp)."""
+    q = {"action": action} if action else {}
+    rows = await (
+        db.audit_log.find(q, {"_id": 0})
+        .sort("timestamp", -1)
+        .to_list(max(1, min(limit, 1000)))
+    )
+    return rows
 
 
 # ============================================================================

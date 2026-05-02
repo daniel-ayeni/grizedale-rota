@@ -261,17 +261,18 @@ def validate_rota(
                     date_=d_str,
                     affected_cells=[{"date": d_str, "staff_initials": s} for s in males_night]))
 
-    # --- manager hard rule (J.C.) ---------------------------------------
+    # --- manager hard rule (is_admin_only or is_manager) ---------------
     mode_mgr = _mode_for(rules_config, "manager_no_shifts", "hard")
     if mode_mgr != "off":
         for s in staff_inits:
-            if not staff_by[s].get("is_admin_only"):
+            info = staff_by[s]
+            if not (info.get("is_admin_only") or info.get("is_manager")):
                 continue
             for d_str in day_strs:
                 cdat = cell[(d_str, s)]
                 if cdat["shift"] in WORKING_SHIFTS and not cdat["locked"]:
                     violations.append(_v("manager_no_shifts", mode_mgr,
-                        f"{s} (admin-only) assigned {cdat['shift']} on {d_str} without manager override (lock)",
+                        f"{s} (admin-only / manager) assigned {cdat['shift']} on {d_str} without manager override (lock)",
                         date_=d_str, staff_initials=s))
 
     # --- contracted hours minimum (PER WEEK) ----------------------------
@@ -306,10 +307,10 @@ def validate_rota(
 
     # --- senior_weekend_cover ------------------------------------------
     # For each Sat and Sun, at least one senior must be on D or D*.
-    # De-hardcoded: derive from staff `is_senior` flag, falling back to
-    # the historic pair ("L.M.", "L.D.") for unmigrated data.
-    # AL exemption: skip when BOTH seniors are on AL/TRN that day.
-    SENIOR_STAFF = tuple(s["initials"] for s in staff if s.get("is_senior")) or ("L.M.", "L.D.")
+    # De-hardcoded: derive from staff `is_senior` flag. Empty tuple
+    # means rule self-disables (no seniors configured in this home).
+    # AL exemption: skip when ALL flagged seniors are on AL/TRN that day.
+    SENIOR_STAFF = tuple(s["initials"] for s in staff if s.get("is_senior"))
     mode_sw = _mode_for(rules_config, "senior_weekend_cover", "hard")
     present_seniors = [s for s in SENIOR_STAFF if s in staff_by]
     if mode_sw != "off" and present_seniors:
@@ -332,18 +333,19 @@ def validate_rota(
                                     for s in avail_seniors]))
 
     # --- avoid_pair_seniors --------------------------------------------
-    # Soft penalty-style violation when BOTH L.M. and L.D. are on day cover
-    # (D or D*) on the same date.
+    # Soft penalty-style violation when the two flagged seniors are both
+    # on day cover (D or D*) on the same date. Only fires when at least
+    # 2 seniors are flagged (is_senior=True) — otherwise there's no pair.
     mode_aps = _mode_for(rules_config, "avoid_pair_seniors", "soft")
-    if mode_aps != "off" and all(s in staff_by for s in SENIOR_STAFF):
-        a, b = SENIOR_STAFF
+    if mode_aps != "off" and len(present_seniors) >= 2:
+        a, b = present_seniors[0], present_seniors[1]
         for d_str in day_strs:
             a_shift = cell[(d_str, a)]["shift"]
             b_shift = cell[(d_str, b)]["shift"]
             if a_shift in {"D", "D*"} and b_shift in {"D", "D*"}:
                 violations.append(_v("avoid_pair_seniors", mode_aps,
                     f"{a} and {b} both on day cover on {d_str} "
-                    "— manager prefers to split them",
+                    "— manager prefers to split seniors",
                     date_=d_str,
                     affected_cells=[
                         {"date": d_str, "staff_initials": a},
@@ -386,8 +388,12 @@ def validate_rota(
         if "rules" in msl_params:
             msl_rules = msl_params.get("rules") or []
         else:
+            legacy_inits = (
+                msl_params.get("staff_initials")
+                or [s["initials"] for s in staff if s.get("is_senior")]
+            )
             msl_rules = [{
-                "staff_initials": msl_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."],
+                "staff_initials": legacy_inits,
                 "min_per_week": msl_params.get("min_sleepovers_per_week", 1),
             }]
         for rule_entry in msl_rules:
@@ -427,7 +433,8 @@ def validate_rota(
         smc_entry = (rules_config or {}).get("senior_monday_cover") or {}
         smc_params = smc_entry.get("params") if isinstance(smc_entry, dict) else {}
         smc_params = smc_params or {}
-        smc_staff = [s for s in (smc_params.get("staff_initials") or ["L.M.", "L.D."])
+        smc_default = [s["initials"] for s in staff if s.get("is_senior")]
+        smc_staff = [s for s in (smc_params.get("staff_initials") or smc_default)
                      if s in staff_by]
         if smc_staff:
             for di, d_str in enumerate(day_strs):
@@ -475,7 +482,8 @@ def validate_rota(
         asd_entry = (rules_config or {}).get("avoid_star_then_day") or {}
         asd_params = asd_entry.get("params") if isinstance(asd_entry, dict) else {}
         asd_params = asd_params or {}
-        asd_overrides = asd_params.get("staff_overrides") or {"L.D.": 60, "L.M.": 60}
+        senior_overrides = {s["initials"]: 60 for s in staff if s.get("is_senior")}
+        asd_overrides = asd_params.get("staff_overrides") or senior_overrides
         for s in staff_inits:
             for i in range(len(day_strs) - 1):
                 today_d = day_strs[i]
@@ -514,7 +522,8 @@ def validate_rota(
         asfs_entry = (rules_config or {}).get("avoid_star_for_staff") or {}
         asfs_params = asfs_entry.get("params") if isinstance(asfs_entry, dict) else {}
         asfs_params = asfs_params or {}
-        asfs_staff = [s for s in (asfs_params.get("staff_initials") or ["L.M.", "L.D.", "T.D."])
+        asfs_default = [s["initials"] for s in staff if s.get("is_senior")]
+        asfs_staff = [s for s in (asfs_params.get("staff_initials") or asfs_default)
                       if s in staff_by]
         for s in asfs_staff:
             for d_str in day_strs:

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Check, X as XIcon, Pencil, Link as LinkIcon, Copy, Trash2 } from "lucide-react";
+import { Plus, Check, X as XIcon, Pencil, Link as LinkIcon, Copy, Trash2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,6 +48,11 @@ export default function Requests() {
     const [selected, setSelected] = useState(new Set());
     const [addOpen, setAddOpen] = useState(false);
     const [linksOpen, setLinksOpen] = useState(false);
+    // Override dialog state — opened when a manager tries to accept a
+    // request (single or bulk) whose slot has a hard-rule clash. The
+    // manager must tick "I understand" + give a reason before the accept
+    // is resubmitted with override_conflict=true.
+    const [overrideCtx, setOverrideCtx] = useState(null);
 
     const load = async () => {
         try {
@@ -66,20 +71,82 @@ export default function Requests() {
     };
     useEffect(() => { load(); /* eslint-disable-next-line */ }, [tab]);
 
+    /** Accept a single request. If the pending row carries a conflict
+     *  (slot_open=false), open the override dialog instead of posting
+     *  immediately. The manager confirms + supplies a reason; the dialog
+     *  then re-posts with override_conflict=true. */
     const resolveOne = async (req, status) => {
+        if (status === "accepted"
+            && req.conflicts
+            && req.conflicts.slot_open === false) {
+            setOverrideCtx({ mode: "single", rows: [req] });
+            return;
+        }
         try {
             await api.patch(`/requests/${req.id}`, { status });
             toast.success(status === "accepted" ? "Accepted" : status === "rejected" ? "Rejected" : "Updated");
             load();
-        } catch (err) { toast.error(formatApiError(err)); }
+        } catch (err) {
+            // Fallback — backend may have re-detected a conflict the
+            // client didn't know about. Prompt for override.
+            if (err?.response?.status === 409) {
+                setOverrideCtx({
+                    mode: "single",
+                    rows: [{ ...req, conflicts: err.response.data?.detail }],
+                });
+                return;
+            }
+            toast.error(formatApiError(err));
+        }
     };
+
+    /** Accept/reject selected rows in bulk. Accept with conflicts opens
+     *  a batch override dialog listing every clashing row. */
     const resolveBulk = async (status) => {
         if (selected.size === 0) return;
+        const rows = reqs.filter((r) => selected.has(r.id));
+        if (status === "accepted") {
+            const conflictRows = rows.filter(
+                (r) => r.conflicts && r.conflicts.slot_open === false
+            );
+            if (conflictRows.length > 0) {
+                setOverrideCtx({ mode: "bulk", rows, conflictRows });
+                return;
+            }
+        }
         try {
             const res = await api.post("/requests/bulk", { ids: Array.from(selected), status });
             toast.success(`${res.data?.updated?.length || 0} updated${res.data?.leave_created ? ` · ${res.data.leave_created} leave entries created` : ""}`);
             load();
         } catch (err) { toast.error(formatApiError(err)); }
+    };
+
+    // Called by OverrideConflictDialog after the manager confirms.
+    const submitOverride = async (reason) => {
+        if (!overrideCtx) return;
+        try {
+            if (overrideCtx.mode === "single") {
+                const req = overrideCtx.rows[0];
+                await api.patch(`/requests/${req.id}`, {
+                    status: "accepted",
+                    override_conflict: true,
+                    override_reason: reason,
+                });
+                toast.success("Accepted with override logged");
+            } else {
+                const res = await api.post("/requests/bulk", {
+                    ids: overrideCtx.rows.map((r) => r.id),
+                    status: "accepted",
+                    override_conflict: true,
+                    override_reason: reason,
+                });
+                toast.success(`${res.data?.updated?.length || 0} accepted · ${overrideCtx.conflictRows?.length || 0} override${overrideCtx.conflictRows?.length === 1 ? "" : "s"} logged`);
+            }
+            setOverrideCtx(null);
+            load();
+        } catch (err) {
+            toast.error(formatApiError(err));
+        }
     };
 
     const toggleSel = (id) => setSelected((s) => {
@@ -185,6 +252,12 @@ export default function Requests() {
             <AddRequestDialog open={addOpen} onOpenChange={setAddOpen} staff={staff} onAdded={load} />
             {/* Manage staff links drawer */}
             <ManageLinksDrawer open={linksOpen} onOpenChange={setLinksOpen} staff={staff} tokens={tokens} onChange={load} />
+            {/* Override conflict dialog */}
+            <OverrideConflictDialog
+                ctx={overrideCtx}
+                onOpenChange={(v) => { if (!v) setOverrideCtx(null); }}
+                onConfirm={submitOverride}
+            />
         </div>
     );
 }
@@ -367,3 +440,99 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
         </Sheet>
     );
 }
+
+/**
+ * Override conflict dialog — opened when accepting a request (single or
+ * bulk) that would trigger `max_one_per_role_on_al`. Forces the manager
+ * to tick "I understand" and enter a reason; only then enables the
+ * "Accept with override" action. Backend logs each override to the
+ * `audit_log` collection with the manager's email + reason.
+ */
+function OverrideConflictDialog({ ctx, onOpenChange, onConfirm }) {
+    const [ack, setAck] = useState(false);
+    const [reason, setReason] = useState("");
+    useEffect(() => {
+        if (ctx) { setAck(false); setReason(""); }
+    }, [ctx]);
+
+    if (!ctx) return null;
+    const conflictRows = ctx.mode === "single"
+        ? ctx.rows
+        : (ctx.conflictRows || []);
+
+    return (
+        <Dialog open={!!ctx} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-lg" data-testid="override-conflict-dialog">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-destructive" />
+                        Conflict — manager override required
+                    </DialogTitle>
+                    <DialogDescription>
+                        {ctx.mode === "single"
+                            ? "Accepting this request will break the max-one-per-role-on-AL rule."
+                            : `Accepting ${conflictRows.length} of the selected requests will break the max-one-per-role-on-AL rule. Non-clashing rows will be accepted normally.`}
+                        {" "}Your override will be logged.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-3 text-sm">
+                    <div className="rounded-md border p-3 space-y-2 bg-[hsl(var(--bg-elev))]" style={{ borderColor: "hsl(var(--accent-red) / 0.4)" }}>
+                        {conflictRows.map((r) => (
+                            <div key={r.id} className="flex items-start gap-2" data-testid={`override-row-${r.id}`}>
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-destructive" />
+                                <div className="text-xs">
+                                    <div><strong>{r.staff_initials}</strong> · {r.date} · <code>{r.shift_preference}</code></div>
+                                    {r.conflicts?.reason && (
+                                        <div className="text-muted-foreground">{r.conflicts.reason}</div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div>
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                            Reason for override <span className="text-destructive">*</span>
+                        </Label>
+                        <Textarea
+                            rows={2}
+                            value={reason}
+                            onChange={(e) => setReason(e.target.value)}
+                            placeholder="e.g. Family emergency — short-staffed but covered by bank worker"
+                            className="mt-1.5"
+                            data-testid="override-reason"
+                        />
+                    </div>
+
+                    <div className="flex items-start gap-2 pt-1">
+                        <Checkbox
+                            id="override-ack"
+                            checked={ack}
+                            onCheckedChange={(v) => setAck(!!v)}
+                            data-testid="override-ack"
+                        />
+                        <Label htmlFor="override-ack" className="text-xs leading-4 font-normal">
+                            I understand this breaks <code className="font-mono">max_one_per_role_on_al</code> and I accept responsibility for the resulting rota clash.
+                        </Label>
+                    </div>
+                </div>
+
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="override-cancel">
+                        Cancel
+                    </Button>
+                    <Button
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        disabled={!ack || !reason.trim()}
+                        onClick={() => onConfirm(reason.trim())}
+                        data-testid="override-confirm"
+                    >
+                        Accept with override
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+

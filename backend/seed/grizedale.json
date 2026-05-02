@@ -19,7 +19,12 @@
       "manager_weekday_admin": true,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": true,
+      "is_deputy": false,
+      "is_senior": false,
+      "is_flexi": false,
+      "is_night": false
     },
     {
       "initials": "L.M.",
@@ -38,7 +43,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": true,
+      "is_senior": true,
+      "is_flexi": false,
+      "is_night": false
     },
     {
       "initials": "L.D.",
@@ -57,7 +67,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": false,
+      "is_senior": true,
+      "is_flexi": false,
+      "is_night": false
     },
     {
       "initials": "D.A.",
@@ -76,7 +91,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": true,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": false,
+      "is_senior": false,
+      "is_flexi": true,
+      "is_night": false
     },
     {
       "initials": "T.D.",
@@ -95,7 +115,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": false,
+      "is_senior": false,
+      "is_flexi": true,
+      "is_night": false
     },
     {
       "initials": "C.E.",
@@ -114,7 +139,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": false,
+      "is_senior": false,
+      "is_flexi": false,
+      "is_night": true
     },
     {
       "initials": "A.A.",
@@ -133,7 +163,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": false,
+      "is_senior": false,
+      "is_flexi": false,
+      "is_night": true
     },
     {
       "initials": "J.R.",
@@ -152,7 +187,12 @@
       "manager_weekday_admin": false,
       "preferred_off_days": [],
       "accepts_overtime": false,
-      "shift_preference": "no_preference"
+      "shift_preference": "no_preference",
+      "is_manager": false,
+      "is_deputy": false,
+      "is_senior": false,
+      "is_flexi": false,
+      "is_night": true
     }
   ],
   "leave": [],

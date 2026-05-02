@@ -11,14 +11,11 @@ import {
     Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger,
 } from "@/components/ui/sheet";
 import {
-    AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-    AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
+import StaffDeleteDialog from "@/components/StaffDeleteDialog";
 
 const EMPTY = {
     initials: "",
@@ -38,7 +35,29 @@ const EMPTY = {
     preferred_off_days: [],
     accepts_overtime: false,
     shift_preference: "no_preference",
+    is_manager: false,
+    is_deputy: false,
+    is_senior: false,
+    is_flexi: false,
+    is_night: false,
     active: true,
+};
+
+// Role-flag metadata used by the role-chip widget.
+// Each flag maps to (label, short code, solver-rule hint).
+const ROLE_FLAGS = [
+    { key: "is_manager", code: "MGR", label: "Manager",  tone: "red"    },
+    { key: "is_deputy",  code: "DEP", label: "Deputy",   tone: "orange" },
+    { key: "is_senior",  code: "SEN", label: "Senior",   tone: "blue"   },
+    { key: "is_flexi",   code: "FLX", label: "Flexi",    tone: "green"  },
+    { key: "is_night",   code: "NGT", label: "Night",    tone: "purple" },
+];
+const TONE_COLORS = {
+    red:    { active: "hsl(0 70% 45%)",    bg: "hsl(0 70% 45% / 0.12)"    },
+    orange: { active: "hsl(28 80% 45%)",   bg: "hsl(28 80% 45% / 0.12)"   },
+    blue:   { active: "hsl(210 75% 48%)",  bg: "hsl(210 75% 48% / 0.12)"  },
+    green:  { active: "hsl(142 55% 38%)",  bg: "hsl(142 55% 38% / 0.12)"  },
+    purple: { active: "hsl(265 55% 50%)",  bg: "hsl(265 55% 50% / 0.12)"  },
 };
 
 const PREF_OPTIONS = ["day", "night", "no_preference"];
@@ -49,12 +68,13 @@ export default function Staff() {
     const [loading, setLoading] = useState(true);
     const [editing, setEditing] = useState(null); // staff doc or null
     const [creating, setCreating] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState(null); // { row } or null
 
     const load = async () => {
         setLoading(true);
         try {
             const { data } = await api.get("/staff");
-            setStaff(data.sort((a, b) => a.initials.localeCompare(b.initials)));
+            setStaff(data);
         } catch (e) {
             toast.error(formatApiError(e));
         } finally {
@@ -74,14 +94,8 @@ export default function Staff() {
         }
     };
 
-    const remove = async (row) => {
-        try {
-            await api.delete(`/staff/${row.id}`);
-            setStaff((s) => s.filter((x) => x.id !== row.id));
-            toast.success(`${row.initials} deleted`);
-        } catch (e) {
-            toast.error(formatApiError(e));
-        }
+    const handleDeleted = (row) => {
+        setStaff((s) => s.filter((x) => x.id !== row.id));
     };
 
     return (
@@ -110,7 +124,7 @@ export default function Staff() {
                         <TableRow>
                             <TableHead className="w-[80px]">Initials</TableHead>
                             <TableHead>Name</TableHead>
-                            <TableHead className="hidden lg:table-cell">Role</TableHead>
+                            <TableHead className="hidden lg:table-cell">Role · Flags</TableHead>
                             <TableHead className="text-center">Hrs</TableHead>
                             <TableHead className="text-center">Gender</TableHead>
                             <TableHead className="text-center">Med</TableHead>
@@ -139,7 +153,10 @@ export default function Staff() {
                                     <div className="font-medium">{row.full_name}</div>
                                     <div className="text-xs text-muted-foreground lg:hidden">{row.role}</div>
                                 </TableCell>
-                                <TableCell className="hidden lg:table-cell text-sm text-muted-foreground">{row.role}</TableCell>
+                                <TableCell className="hidden lg:table-cell text-sm text-muted-foreground">
+                                    <div className="text-sm">{row.role}</div>
+                                    <RoleFlagChips row={row} onToggle={(k, v) => togglePatch(row, k, v)} />
+                                </TableCell>
                                 <TableCell className="text-center">{row.target_weekly_hours}</TableCell>
                                 <TableCell className="text-center">{row.gender}</TableCell>
                                 <TableCell className="text-center"><Switch checked={row.medication_competent} onCheckedChange={(v) => togglePatch(row, "medication_competent", v)} data-testid={`staff-${row.initials}-med`} /></TableCell>
@@ -158,23 +175,15 @@ export default function Staff() {
                                         <Button size="sm" variant="ghost" onClick={() => { setEditing(row); setCreating(false); }} data-testid={`staff-${row.initials}-edit`}>
                                             <Pencil className="w-4 h-4" />
                                         </Button>
-                                        <AlertDialog>
-                                            <AlertDialogTrigger asChild>
-                                                <Button size="sm" variant="ghost" data-testid={`staff-${row.initials}-delete`}>
-                                                    <Trash2 className="w-4 h-4 text-destructive" />
-                                                </Button>
-                                            </AlertDialogTrigger>
-                                            <AlertDialogContent>
-                                                <AlertDialogHeader>
-                                                    <AlertDialogTitle>Delete {row.initials}?</AlertDialogTitle>
-                                                    <AlertDialogDescription>This will permanently remove the staff record. The solver will no longer schedule shifts for them.</AlertDialogDescription>
-                                                </AlertDialogHeader>
-                                                <AlertDialogFooter>
-                                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                    <AlertDialogAction onClick={() => remove(row)} data-testid={`staff-${row.initials}-confirm-delete`}>Delete</AlertDialogAction>
-                                                </AlertDialogFooter>
-                                            </AlertDialogContent>
-                                        </AlertDialog>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => setDeleteTarget(row)}
+                                            data-testid={`staff-${row.initials}-delete`}
+                                            title="Delete staff"
+                                        >
+                                            <Trash2 className="w-4 h-4 text-destructive" />
+                                        </Button>
                                     </div>
                                 </TableCell>
                             </TableRow>
@@ -191,11 +200,17 @@ export default function Staff() {
                 onSaved={(saved) => {
                     setStaff((s) => {
                         const exists = s.some((x) => x.id === saved.id);
-                        return exists ? s.map((x) => (x.id === saved.id ? saved : x)) : [...s, saved].sort((a,b) => a.initials.localeCompare(b.initials));
+                        return exists ? s.map((x) => (x.id === saved.id ? saved : x)) : [...s, saved];
                     });
                     setEditing(null);
                     setCreating(false);
                 }}
+            />
+            <StaffDeleteDialog
+                row={deleteTarget}
+                open={!!deleteTarget}
+                onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}
+                onDeleted={handleDeleted}
             />
         </div>
     );
@@ -281,6 +296,26 @@ function StaffSheet({ open, onOpenChange, value, creating, onSaved }) {
                         <SwitchRow label="Can do Sleepover" checked={form.can_do_sleepover} onChange={(v) => update("can_do_sleepover", v)} testid="sheet-can-sleep" />
                         <SwitchRow label="Accepts overtime (above contracted hours)" checked={!!form.accepts_overtime} onChange={(v) => update("accepts_overtime", v)} testid="sheet-accepts-ot" />
                     </div>
+
+                    {/* Role flags — drive de-hardcoded solver rules */}
+                    <div>
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">Role flags (solver rules)</Label>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="sheet-role-flags">
+                            {ROLE_FLAGS.map((f) => (
+                                <RoleChipButton
+                                    key={f.key}
+                                    flag={f}
+                                    active={!!form[f.key]}
+                                    onToggle={() => update(f.key, !form[f.key])}
+                                    testid={`sheet-role-${f.key}`}
+                                />
+                            ))}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground italic mt-1.5">
+                            These flags drive solver rules dynamically — e.g. tagging someone as Senior makes <code>senior_weekend_cover</code> apply to them on the next generate.
+                        </p>
+                    </div>
+
                     <SwitchRow label="Active" checked={form.active} onChange={(v) => update("active", v)} testid="sheet-active" />
                     <SheetFooter className="pt-4">
                         <Button type="submit" className="btn-primary" data-testid="sheet-save">{creating ? "Create" : "Save changes"}</Button>
@@ -356,5 +391,49 @@ function PrefSegmented({ row, onChange }) {
                 </button>
             ))}
         </div>
+    );
+}
+
+
+/**
+ * Compact row of role-flag chips (MGR/DEP/SEN/FLX/NGT). Clicking a chip
+ * flips the corresponding `is_*` flag on the staff doc and surfaces the
+ * change via `onToggle`. The chips visually feed back the active state
+ * so managers can see at a glance which rules apply to each staff.
+ */
+function RoleFlagChips({ row, onToggle }) {
+    return (
+        <div className="flex flex-wrap gap-1 mt-1" data-testid={`staff-${row.initials}-roles`}>
+            {ROLE_FLAGS.map((f) => (
+                <RoleChipButton
+                    key={f.key}
+                    flag={f}
+                    active={!!row[f.key]}
+                    onToggle={() => onToggle(f.key, !row[f.key])}
+                    testid={`staff-${row.initials}-role-${f.key}`}
+                />
+            ))}
+        </div>
+    );
+}
+
+function RoleChipButton({ flag, active, onToggle, testid }) {
+    const tone = TONE_COLORS[flag.tone] || TONE_COLORS.blue;
+    return (
+        <button
+            type="button"
+            onClick={onToggle}
+            className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border transition-colors"
+            style={{
+                background: active ? tone.bg : "transparent",
+                color: active ? tone.active : "hsl(var(--muted-foreground))",
+                borderColor: active ? tone.active : "hsl(var(--border))",
+            }}
+            title={active ? `${flag.label} — click to unset` : `Click to tag as ${flag.label}`}
+            data-testid={testid}
+            data-active={active ? "true" : "false"}
+        >
+            {flag.code}
+        </button>
     );
 }
