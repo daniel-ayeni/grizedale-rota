@@ -19,6 +19,48 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 
 ## What's been implemented (latest first)
 
+### 2026-05-02 — De-hardcode solver, role-flag UI, override dialog
+- **Solver fully de-hardcoded**: `rota_solver.py`, `rota_validator.py`, and
+  `rule_definitions.py` contain ZERO staff-initial string literals. All
+  "who's a senior/flexi/night/manager" lookups resolve via per-staff role
+  flags (`is_manager`, `is_deputy`, `is_senior`, `is_flexi`, `is_night`).
+  New helper `_derive_role_staff(staff_list, flag)`. Manager rule now
+  fires on `is_admin_only OR is_manager`. Default rule params are empty
+  templates; `default_rules_config(staff_list)` pre-populates role-derived
+  initials at seed time. Grizedale seed JSON updated with flag values.
+- **Role-flag chips on /staff**: color-coded inline chips (MGR red · DEP
+  orange · SEN blue · FLX green · NGT purple) per staff row. Clicking a
+  chip toggles `is_*` on the backend via PUT /api/staff/{id}. Staff sheet
+  form also carries the chips so new staff start with correct roles.
+- **Staff delete dialog with references**: new `StaffDeleteDialog`
+  component fetches `/api/staff/{id}/references` and shows counts for
+  rota assignments, leave, requests, active tokens, and a list of every
+  rule that names the staff explicitly with its mode (SOFT/HARD). "I
+  understand — delete and orphan references" ack checkbox required.
+- **Override conflict dialog on /requests**: accepting a request that
+  would break `max_one_per_role_on_al` opens `OverrideConflictDialog`.
+  Manager must tick the ack checkbox AND type a reason; only then can
+  they click "Accept with override". Bulk accept batches all clashing
+  rows into a single override dialog. Non-clashing rows accept normally
+  via `/api/requests/bulk`, which now returns `skipped_conflicts` when
+  no override is supplied.
+- **audit_log collection**: new backend collection capturing every
+  override (`{actor_email, action:override_conflict, details, timestamp}`)
+  plus `GET /api/audit-log` endpoint for manager review.
+- **Backend endpoint additions**: PATCH `/api/requests/{id}` now returns
+  409 when a conflict exists without override, 422 when override is
+  requested without a reason, and 200 with audit-log row on full success.
+  Bulk endpoint extended with `override_conflict`, `override_reason`,
+  `skipped_conflicts` in the response.
+- **Verification**: test_runner.py passes all 30 assertions. Dedicated
+  pytest suite `test_phase_dehardcode.py` covers 10 cases — all pass.
+  Grep for any of `"J.C.|"L.M.|"L.D.|"D.A.|"T.D.|"C.E.|"A.A.|"J.R.` in
+  `rota_solver.py`, `rota_validator.py`, `rule_definitions.py` returns
+  ZERO matches. Final status from testing subagent: backend 10/10,
+  frontend 100% for Staff chip toggle, StaffDeleteDialog, Requests
+  conflicts badge, OverrideConflictDialog, and audit trail end-to-end.
+
+
 ### 2026-05-01 — Consolidated batch (this session)
 - **N cells GREEN per user spec**: Paper-theme online + PDF + Excel
   exports now render N cells with the same solid green (#5A8A4A) +
