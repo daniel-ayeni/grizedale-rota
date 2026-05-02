@@ -325,24 +325,26 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
         if (!staffPick) return;
         try {
             const { data } = await api.post("/request-tokens", { staff_initials: staffPick, expires_in_days: days });
-            // Backend now returns both short_url (via TinyURL) and long_url.
-            // Copy the short one if available.
+            // Backend returns long_url + short_url + short_url_provider
+            // (is.gd / da.gd / direct). Copy the short one if available.
             const longUrl = data.long_url || `${window.location.origin}${data.url}`;
             const linkToCopy = data.short_url || longUrl;
             await navigator.clipboard.writeText(linkToCopy).catch(() => {});
+            const provider = data.short_url_provider || "direct";
             toast.success(data.short_url
-                ? "Short link copied to clipboard (via TinyURL)"
+                ? `Short link copied to clipboard (via ${provider})`
                 : "Link copied to clipboard");
             onChange();
         } catch (err) { toast.error(formatApiError(err)); }
     };
 
     const copyOne = async (t) => {
-        // Prefer the TinyURL short_url; fall back to long_url; then build
-        // from token (legacy rows that pre-date the long_url field).
+        // Prefer the short_url; fall back to long_url; then build from
+        // token (legacy rows that pre-date long_url).
         const url = t.short_url || t.long_url || `${window.location.origin}/r/${t.token}`;
         await navigator.clipboard.writeText(url).catch(() => {});
-        toast.success(t.short_url ? "Short link copied (via TinyURL)" : "Link copied");
+        const provider = t.short_url_provider || (t.short_url ? "shortener" : "long");
+        toast.success(t.short_url ? `Short link copied (via ${provider})` : "Link copied");
     };
 
     const revoke = async (id) => {
@@ -396,7 +398,7 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                                         </Button>
                                     </div>
                                 </div>
-                                {/* PRIMARY chip — TinyURL short URL when we have one. */}
+                                {/* PRIMARY chip — short URL when available. */}
                                 {shortUrl ? (
                                     <>
                                         <code
@@ -409,12 +411,12 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                                             {shortUrl}
                                         </code>
                                         <div className="text-[10px] text-muted-foreground italic">
-                                            via TinyURL · expanded: <span className="select-all" title={longUrl}>{longUrl.replace(/^https?:\/\//, "")}</span>
+                                            via {t.short_url_provider || "shortener"} · expanded: <span className="select-all" title={longUrl}>{longUrl.replace(/^https?:\/\//, "")}</span>
                                         </div>
                                     </>
                                 ) : (
                                     <>
-                                        {/* Fallback when TinyURL was unreachable — long URL only. */}
+                                        {/* Fallback when shortener was unreachable — long URL only. */}
                                         <code
                                             className="block px-2 py-1.5 rounded font-mono text-xs cursor-pointer select-all"
                                             style={{ background: "hsl(var(--bg-elev))", color: "hsl(var(--primary))" }}
@@ -425,7 +427,7 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                                             {longUrl}
                                         </code>
                                         <div className="text-[10px] text-muted-foreground italic">
-                                            (TinyURL unavailable — using long link)
+                                            (Shortener unavailable — using long link)
                                         </div>
                                     </>
                                 )}

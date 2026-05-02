@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 8 — End-to-end testing of (1) enriched /check slot shape with role-aware existing_leave, (2) public /r/{token} ExpiryBanner + Modern/Paper theme toggle persisted under 'grizedale_theme', (3) is.gd -> da.gd -> direct shortener chain with short_url_provider field, (4) direct 301 redirects (no preview page), (5) 3-state SlotBanner (red/amber/green) + submit stays enabled on conflicts, (6) Requests drawer renders 'via is.gd · expanded: ...' byline. ALL 7 NEW PYTEST PASS + ALL 10 REGRESSION PYTEST PASS + FULL FRONTEND FLOW VERIFIED.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Sidebar footer",
+        "issues": ["Still reads 'Phase 2 · v0.3.0' — carried over from iter_5/6/7; cosmetic only."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase4_slot_shortener.py",
+    "/app/test_reports/pytest/phase4_results.xml",
+    "/app/backend/tests/test_phase_dehardcode.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_check_leave_slot correctly returns slot_status ∈ {open, role_conflict, hard_limit} with back-compat slot_open, and surfaces existing_leave for ALL leave on the date (not just role-clashes) so the amber FYI chip can render.",
+    "Existing_leave rows are hydrated with staff role via a single db.staff.find({initials: {$in: [...]}}) — good, no N+1.",
+    "_shorten_url chain is well-behaved: 5s timeout, follow_redirects=False on the create call, returns ('direct', None) on complete failure, logs at WARNING. is.gd first is correct — smaller tokens and no confirmation page.",
+    "POST /api/request-tokens stores short_url_provider on the doc so it's available in GET /api/request-tokens (list_tokens), enabling the 'via <provider>' byline to survive page reloads.",
+    "Public /check still honours preference=WANT_D/WANT_N by returning slot_status='open' with existing_leave populated — good, prevents false-positive blocking on working-shift preferences.",
+    "Manager-side PATCH /requests/{id} still uses conflict.get('slot_open') back-compat key — no regression on existing conflict dialog flow."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase4_slot_shortener.py",
+    "/app/test_reports/pytest/phase4_results.xml",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7 new + 10/10 regression pytest)",
+    "frontend": "100% (theme toggle persistence, expiry banner, role-clash red banner + submit enabled, FYI amber chip with different-role staff listed, green clean-slot banner, public submit 200, Requests drawer 'via is.gd · expanded: ...' byline)"
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "Ephemeral AL rows for D.A./T.D./Night-Support staff on future dates (+200/+203/+206 days) created then cleaned up per-test. Several request-tokens created and revoked post-test. One staff_link request was submitted via the public page to verify submit flow (pending, remains in DB — not cleaned; same approach as iter_7 audit rows).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend && REACT_APP_BACKEND_URL=<public_url> python -m pytest tests/test_phase4_slot_shortener.py -v. Covers TestSlotCheck (role_conflict / open+fyi / clean / self-hard-limit) and TestShortener (provider field / 301 direct redirect / valid_until back-compat). Test observed provider='is.gd' live in UK region. Short URL 301 redirect test SKIPs gracefully if both providers are unreachable (provider='direct'). Legacy tokens from before the migration still render in the drawer with 'via shortener' fallback — verified by spotting a tinyurl.com/... token in the drawer that renders without error.",
+  "rca_of_the_issue": "N/A — all 14 review_request items implemented per spec and verified end-to-end."
+}

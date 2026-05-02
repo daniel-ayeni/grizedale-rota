@@ -1508,33 +1508,59 @@ async def list_audit_log(
 # ============================================================================
 # Request tokens (Phase 2)
 # ============================================================================
-async def _shorten_with_tinyurl(long_url: str) -> str | None:
-    """Call TinyURL's free no-auth API to shorten a URL. Returns the short
-    URL on success, or None on any failure (timeout, non-200, parse error).
+async def _shorten_url(long_url: str) -> tuple[str | None, str]:
+    """Shorten a URL using a chain of free no-auth shorteners that all
+    redirect DIRECTLY to the target (no preview / confirmation page).
 
-    TinyURL free API: https://tinyurl.com/api-create.php?url=<encoded>
-    No tracking requirements beyond standard rate limits — fine for
-    public-facing staff request links.
+    Provider order (most-direct first):
+        1. is.gd   — `https://is.gd/create.php?format=simple&url=<url>`
+                     6-7 char tokens, no preview page, very stable.
+        2. da.gd   — `https://da.gd/s?url=<url>`
+                     5-6 char tokens, also direct.
+        3. (fallback) — return None so caller uses the long URL.
+
+    Returns `(short_url, provider)`. provider is one of
+    {"is.gd", "da.gd", "direct"}. Network failures are logged at WARNING
+    and the chain falls through silently — generating a token never
+    blocks on a flaky external API.
     """
     import httpx
-    import urllib.parse as up
-    try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+
+    async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+        # 1) is.gd
+        try:
             resp = await client.get(
-                "https://tinyurl.com/api-create.php",
+                "https://is.gd/create.php",
+                params={"format": "simple", "url": long_url},
+            )
+            if resp.status_code == 200:
+                short = (resp.text or "").strip()
+                if short.startswith("http") and "Error" not in short:
+                    return short, "is.gd"
+                logger.warning("is.gd returned non-URL payload: %r", short[:100])
+            else:
+                logger.warning("is.gd non-200 (%d) for %s", resp.status_code, long_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("is.gd call failed: %s", exc)
+
+        # 2) da.gd
+        try:
+            resp = await client.get(
+                "https://da.gd/s",
                 params={"url": long_url},
             )
-            if resp.status_code != 200:
-                logger.warning("TinyURL non-200 (%d) for %s", resp.status_code, long_url)
-                return None
-            short = (resp.text or "").strip()
-            if not short.startswith("http"):
-                logger.warning("TinyURL returned bad payload: %r", short[:100])
-                return None
-            return short
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("TinyURL call failed: %s", exc)
-        return None
+            if resp.status_code == 200:
+                short = (resp.text or "").strip()
+                if short.startswith("http"):
+                    return short, "da.gd"
+                logger.warning("da.gd returned non-URL payload: %r", short[:100])
+            else:
+                logger.warning("da.gd non-200 (%d) for %s", resp.status_code, long_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("da.gd call failed: %s", exc)
+
+    # All providers failed — caller will fall back to the long URL.
+    return None, "direct"
 
 
 def _public_base_url(request: Request) -> str:
@@ -1563,10 +1589,13 @@ async def create_token(payload: TokenCreate, request: Request, current=Depends(a
 
     The token is a 6-char base62 string (e.g. `x7kbP9`) so the URL stays
     pasteable in a text message. We retry on the (very unlikely) collision.
-    The full URL is then run through TinyURL to produce an even shorter
-    link the manager can text/email to the staff member. If TinyURL is
-    unreachable or times out we fall back to the long URL only — token
-    creation never blocks on the external API.
+    The full URL is then shortened (is.gd → da.gd → direct fallback) to
+    produce an even shorter link the manager can text/email to the
+    staff member. is.gd / da.gd both redirect DIRECTLY to the target
+    with no preview/confirmation page (TinyURL was abandoned because it
+    sometimes shows a "suspicious URL" warning before forwarding). If
+    both shorteners fail we fall back to the long URL — token creation
+    never blocks on the external API.
 
     Custom-hostname note: the public URL is served from the deployment
     host (e.g. `<app>.preview.emergentagent.com`). Set BASE_APP_URL env
@@ -1584,7 +1613,7 @@ async def create_token(payload: TokenCreate, request: Request, current=Depends(a
 
     base = _public_base_url(request)
     long_url = f"{base}/r/{token}"
-    short_url = await _shorten_with_tinyurl(long_url)
+    short_url, short_provider = await _shorten_url(long_url)
 
     doc = {
         "id": str(uuid.uuid4()),
@@ -1594,6 +1623,7 @@ async def create_token(payload: TokenCreate, request: Request, current=Depends(a
         "revoked": False,
         "long_url": long_url,
         "short_url": short_url,
+        "short_url_provider": short_provider,
         "created_at": _now(),
     }
     await db.request_tokens.insert_one(doc)
@@ -1647,65 +1677,126 @@ async def public_get(token: str):
 
 
 async def _check_leave_slot(staff_initials: str, date_str: str, preference: str) -> dict:
-    """Return {slot_open, reason, existing_leave} describing whether a
-    staff member can realistically get a given off-type request
-    approved without hard-rule conflicts.
+    """Inspect a candidate (staff, date, preference) for an off-type
+    request and return rich slot-availability info.
+
+    Response shape (Phase 4):
+        {
+          "slot_status":     "open" | "role_conflict" | "hard_limit",
+          "existing_leave":  [{"staff_initials","role","type"}, ...],   # any leave on date
+          "would_break_rules": ["max_one_per_role_on_al", ...],
+          # Backwards-compat fields used by the manager-side conflicts column:
+          "slot_open":       bool,
+          "reason":          str|None,
+        }
 
     Rules honoured:
       - `max_one_per_role_on_al`: a role can only have ONE staff on AL
-        / OFF on the same date. (Manager is exempt.)
-      - Existing leave for the same staff / same date blocks the slot.
+        / OFF on the same date. (Manager / admin-only is exempt.)
+      - Existing leave for the same staff / same date is treated as a
+        hard self-conflict.
+      - All OTHER existing leave on the same date is surfaced as info
+        (amber chip on the staff page) but does NOT block submission.
     """
     preference = (preference or "").upper()
     is_off_type = preference in {"OFF", "AL"}
-    # Only block on AL-type requests (working-shift prefs never clash here)
-    if not is_off_type:
-        return {"slot_open": True, "reason": None, "existing_leave": []}
 
     staff = await db.staff.find_one({"initials": staff_initials}, {"_id": 0})
     if not staff:
-        return {"slot_open": False, "reason": "Staff not found", "existing_leave": []}
+        return {
+            "slot_status": "hard_limit",
+            "slot_open": False,
+            "reason": "Staff not found",
+            "existing_leave": [],
+            "would_break_rules": [],
+        }
 
-    # Find existing leave rows that fall on this date.
-    existing = await db.leave.find(
-        {"date": date_str, "type": {"$in": ["AL", "OFF_REQ"]}}, {"_id": 0}
+    # Pull every leave row for that date (regardless of role) so the
+    # public page can flag who is off — even when there's no actual
+    # rule conflict, the staff member should still see who else is off.
+    raw_leave = await db.leave.find(
+        {"date": date_str, "type": {"$in": ["AL", "OFF_REQ", "TRN"]}},
+        {"_id": 0},
     ).to_list(50)
+
+    # Hydrate each leave row with the staff role for nicer UX.
+    role_by_initials: dict[str, str] = {}
+    if raw_leave:
+        same_dates_inits = list({e["staff_initials"] for e in raw_leave})
+        async for s in db.staff.find(
+            {"initials": {"$in": same_dates_inits}}, {"_id": 0, "initials": 1, "role": 1}
+        ):
+            role_by_initials[s["initials"]] = s.get("role", "")
     existing_leave = [
-        {"staff_initials": e["staff_initials"], "type": e["type"]}
-        for e in existing
+        {
+            "staff_initials": e["staff_initials"],
+            "role": role_by_initials.get(e["staff_initials"], ""),
+            "type": e["type"],
+        }
+        for e in raw_leave
     ]
-    # Self already has leave on that date?
+
+    # Working-shift preferences (WANT_D / WANT_N etc.) never trigger a
+    # hard-limit; just return the existing-leave list as INFO.
+    if not is_off_type:
+        return {
+            "slot_status": "open",
+            "slot_open": True,
+            "reason": None,
+            "existing_leave": existing_leave,
+            "would_break_rules": [],
+        }
+
+    # Self already on leave on that date → hard self-conflict.
     if any(e["staff_initials"] == staff_initials for e in existing_leave):
         return {
+            "slot_status": "hard_limit",
             "slot_open": False,
             "reason": f"{staff_initials} is already on leave on {date_str}.",
             "existing_leave": existing_leave,
+            "would_break_rules": ["self_already_off"],
         }
 
-    # Role-collision check (max one per role on AL).
-    staff_role = (staff.get("role") or "").strip().lower()
-    is_manager = bool(staff.get("is_admin_only") or staff.get("is_manager"))
-    if is_manager or not staff_role:
-        # Manager is exempt — they're admin-only; role-collision doesn't
-        # apply. Also skip when role is missing.
-        return {"slot_open": True, "reason": None, "existing_leave": existing_leave}
-    same_role_staff = await db.staff.find(
-        {"role": {"$regex": f"^{staff_role}$", "$options": "i"},
-         "initials": {"$ne": staff_initials}}, {"_id": 0}
-    ).to_list(50)
-    same_role_initials = {s["initials"] for s in same_role_staff}
-    clashing = [e for e in existing_leave if e["staff_initials"] in same_role_initials]
+    # Role-collision check: max-one-per-role-on-AL.
+    staff_role = (staff.get("role") or "").strip()
+    is_admin = bool(staff.get("is_admin_only") or staff.get("is_manager"))
+    if is_admin or not staff_role:
+        # Manager / role-less staff always pass the role-collision rule.
+        return {
+            "slot_status": "open",
+            "slot_open": True,
+            "reason": None,
+            "existing_leave": existing_leave,
+            "would_break_rules": [],
+        }
+
+    role_lower = staff_role.lower()
+    # Same-role colleagues already off? Surface red banner + reason.
+    clashing = [
+        e for e in existing_leave
+        if e["staff_initials"] != staff_initials
+        and (e.get("role") or "").strip().lower() == role_lower
+    ]
     if clashing:
         names = ", ".join(sorted({e["staff_initials"] for e in clashing}))
         return {
+            "slot_status": "role_conflict",
             "slot_open": False,
             "reason": (
                 f"{names} ({staff_role}) is already on AL on {date_str} — "
                 f"only one {staff_role} can be on AL the same day."
             ),
             "existing_leave": existing_leave,
+            "would_break_rules": ["max_one_per_role_on_al"],
         }
-    return {"slot_open": True, "reason": None, "existing_leave": existing_leave}
+
+    return {
+        "slot_status": "open",
+        "slot_open": True,
+        "reason": None,
+        "existing_leave": existing_leave,
+        "would_break_rules": [],
+    }
 
 
 @api.get("/public/request-link/{token}/check")

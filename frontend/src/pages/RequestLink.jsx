@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { CheckCircle2, AlertOctagon, Calendar, Plus, Trash2, ShieldCheck, AlertTriangle } from "lucide-react";
+import { CheckCircle2, AlertOctagon, Calendar, Plus, Trash2, ShieldCheck, AlertTriangle, Info, Sun, Moon, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,12 +22,30 @@ const PREFS = [
     { value: "AVOID", label: "Avoid" },
 ];
 
+// Pretty-format the validity expiry. Returns:
+//   { label: "Tuesday, 30 June 2026", days_left: 14, urgency: "ok"|"warn"|"expired" }
+function formatExpiry(isoString) {
+    if (!isoString) return null;
+    const expires = new Date(isoString);
+    if (isNaN(expires.getTime())) return null;
+    const now = new Date();
+    const diffMs = expires.getTime() - now.getTime();
+    const days_left = Math.ceil(diffMs / 86400000);
+    const label = expires.toLocaleDateString("en-GB", {
+        weekday: "long", day: "numeric", month: "long", year: "numeric",
+    });
+    let urgency = "ok";
+    if (days_left < 0) urgency = "expired";
+    else if (days_left < 3) urgency = "warn";
+    return { label, days_left, urgency };
+}
+
 export default function RequestLink() {
     const { token } = useParams();
-    const { theme } = useTheme();
+    const { theme, toggle } = useTheme();
     const [info, setInfo] = useState(undefined);  // undefined=loading, null=invalid
     const [error, setError] = useState(null);
-    // rows: array of {id, date, pref, notes, slot?: {slot_open, reason, existing_leave}, checking: bool}
+    // rows: array of {id, date, pref, notes, slot?: {slot_status, reason, existing_leave, would_break_rules}, checking: bool}
     const [rows, setRows] = useState([]);
     const [newDate, setNewDate] = useState("");
     const [submitting, setSubmitting] = useState(false);
@@ -46,6 +64,7 @@ export default function RequestLink() {
        end-of-next-year), falling back to the legacy current_rota_window. */
     const window_ = info?.window || info?.current_rota_window || null;
     const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
+    const expiry = useMemo(() => formatExpiry(info?.valid_until), [info?.valid_until]);
 
     const addRow = () => {
         if (!newDate) { toast.error("Pick a date first"); return; }
@@ -73,12 +92,24 @@ export default function RequestLink() {
     };
 
     /* Slot-availability check — calls /api/public/request-link/{t}/check
-       so the staff member sees a green "slot open" or red "slot taken"
-       hint BEFORE submitting their OFF/AL request. Best-effort; failure
-       silently leaves slot=null and the request is submittable. */
+       and stores the rich response so the row can render either:
+        - green "Slot is open" banner
+        - red "Conflict" banner with offending staff + role + reason
+        - amber info chip listing OTHER staff already off (no conflict) */
     const checkSlot = async (id, date, pref) => {
         if (!["OFF", "AL"].includes(pref)) {
-            setRow(id, { slot: null, checking: false });
+            // Still query so we can show amber info chip if anyone else
+            // is off that day — useful awareness even for non-OFF prefs.
+            setRow(id, { checking: true });
+            try {
+                const { data } = await axios.get(
+                    `${BACKEND_URL}/api/public/request-link/${token}/check`,
+                    { params: { date, preference: pref || "WANT_D" } },
+                );
+                setRow(id, { slot: data, checking: false });
+            } catch {
+                setRow(id, { slot: null, checking: false });
+            }
             return;
         }
         setRow(id, { checking: true });
@@ -142,8 +173,26 @@ export default function RequestLink() {
         <div className="min-h-screen login-hero" data-testid="request-link-page">
             <Toaster richColors closeButton />
             <div className="max-w-2xl mx-auto px-6 py-10">
-                <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground mb-2">
-                    <Calendar className="w-3.5 h-3.5" /> Theme: {theme}
+                {/* Header — theme toggle + expiry */}
+                <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                        <Calendar className="w-3.5 h-3.5" /> Staff request link
+                    </div>
+                    <button
+                        type="button"
+                        onClick={toggle}
+                        data-testid="rl-theme-toggle"
+                        className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border focus-ring transition-colors"
+                        style={{
+                            borderColor: "hsl(var(--border-strong))",
+                            background: "hsl(var(--bg))",
+                        }}
+                        aria-label="Toggle theme"
+                        title={`Theme: ${theme} — click to switch`}
+                    >
+                        {theme === "paper" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                        <span className="capitalize">{theme}</span>
+                    </button>
                 </div>
                 <h1 className="display text-3xl sm:text-4xl font-semibold leading-tight" data-testid="rl-hi">
                     Hi {info.name || info.staff_initials}
@@ -152,8 +201,13 @@ export default function RequestLink() {
                     Submit requests for any date from <strong>{window_?.from}</strong> through <strong>{window_?.to}</strong>.
                 </p>
 
+                {/* Expiry banner */}
+                {expiry && (
+                    <ExpiryBanner expiry={expiry} />
+                )}
+
                 {/* Date picker + add */}
-                <div className="app-card mt-6 p-4 flex flex-col sm:flex-row gap-2" data-testid="rl-add-card">
+                <div className="app-card mt-4 p-4 flex flex-col sm:flex-row gap-2" data-testid="rl-add-card">
                     <div className="flex-1">
                         <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
                             Pick a date
@@ -210,34 +264,8 @@ export default function RequestLink() {
                                         <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
                                     </Button>
                                 </div>
-                                {/* Slot availability hint for OFF / AL */}
-                                {r.slot && (
-                                    <div
-                                        className="flex items-start gap-2 px-3 py-2 rounded text-xs"
-                                        style={{
-                                            background: r.slot.slot_open
-                                                ? "hsl(142 62% 35% / 0.1)"
-                                                : "hsl(var(--accent-red) / 0.1)",
-                                            color: r.slot.slot_open
-                                                ? "hsl(142 62% 30%)"
-                                                : "hsl(var(--accent-red))",
-                                        }}
-                                        data-testid={`rl-slot-${r.date}`}
-                                    >
-                                        {r.slot.slot_open ? <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" /> : <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />}
-                                        <div>
-                                            <div className="font-semibold">
-                                                {r.slot.slot_open ? "Slot is open" : "Slot taken"}
-                                            </div>
-                                            {r.slot.reason && <div className="mt-0.5">{r.slot.reason}</div>}
-                                            {!r.slot.slot_open && (
-                                                <div className="mt-0.5 italic">
-                                                    You can still submit — your manager will decide.
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
+                                {/* Slot-availability hint */}
+                                <SlotBanner row={r} />
                                 <Textarea
                                     rows={1}
                                     value={r.notes}
@@ -261,6 +289,122 @@ export default function RequestLink() {
                         {submitting ? "Submitting…" : `Submit ${rows.length || ""} request${rows.length === 1 ? "" : "s"}`.trim()}
                     </Button>
                 </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Expiry banner — shows "Valid until …" with a relative-days hint.
+ *  - urgency=ok    → grey, neutral phrasing
+ *  - urgency=warn  → amber, "ask manager for a new link"
+ *  - urgency=expired → red (won't usually render: backend already 410s,
+ *    but kept for safety)
+ */
+function ExpiryBanner({ expiry }) {
+    const tone = expiry.urgency === "warn"
+        ? { bg: "hsl(38 95% 55% / 0.12)", color: "hsl(38 95% 35%)", border: "hsl(38 95% 55% / 0.4)" }
+        : expiry.urgency === "expired"
+            ? { bg: "hsl(var(--accent-red) / 0.1)", color: "hsl(var(--accent-red))", border: "hsl(var(--accent-red) / 0.4)" }
+            : { bg: "hsl(var(--bg-elev))", color: "hsl(var(--muted-foreground))", border: "hsl(var(--border))" };
+    const dl = expiry.days_left;
+    let suffix;
+    if (dl < 0) suffix = `expired ${Math.abs(dl)} day${Math.abs(dl) === 1 ? "" : "s"} ago`;
+    else if (dl === 0) suffix = "expires today";
+    else if (dl === 1) suffix = "1 day left";
+    else suffix = `${dl} days left`;
+    return (
+        <div
+            className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border text-xs"
+            style={{ background: tone.bg, color: tone.color, borderColor: tone.border }}
+            data-testid="rl-expiry"
+        >
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <div>
+                This link is valid until <strong>{expiry.label}</strong> · {suffix}.
+                {expiry.urgency === "warn" && " Ask your manager for a new link if you need more time."}
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Slot banner — three states:
+ *  - slot_status === "open" with no other-staff leave → green ✓
+ *  - slot_status === "open" but OTHER staff are off → amber info chip
+ *    listing who's off (no conflict; staff just sees the heads-up)
+ *  - slot_status === "role_conflict" / "hard_limit" → red banner with
+ *    full reason + offending staff. Submit stays enabled.
+ */
+function SlotBanner({ row }) {
+    if (!row.slot) return null;
+    const slot = row.slot;
+    const others = (slot.existing_leave || []).filter(
+        (e) => e.staff_initials && e.type !== "self"
+    );
+    const conflict = slot.slot_status && slot.slot_status !== "open";
+    if (conflict) {
+        return (
+            <div
+                className="flex items-start gap-2 px-3 py-2 rounded text-xs"
+                style={{
+                    background: "hsl(var(--accent-red) / 0.1)",
+                    color: "hsl(var(--accent-red))",
+                    border: "1px solid hsl(var(--accent-red) / 0.4)",
+                }}
+                data-testid={`rl-slot-${row.date}`}
+            >
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                    <div className="font-semibold">Slot taken</div>
+                    {slot.reason && <div className="mt-0.5">{slot.reason}</div>}
+                    <div className="mt-0.5 italic">
+                        You can still submit — your manager will review.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+    if (others.length > 0) {
+        return (
+            <div
+                className="flex items-start gap-2 px-3 py-2 rounded text-xs"
+                style={{
+                    background: "hsl(38 95% 55% / 0.1)",
+                    color: "hsl(38 95% 25%)",
+                    border: "1px solid hsl(38 95% 55% / 0.4)",
+                }}
+                data-testid={`rl-slot-${row.date}`}
+            >
+                <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                    <div className="font-semibold">FYI — others off this day</div>
+                    <div className="mt-0.5">
+                        {others
+                            .map((e) => `${e.staff_initials}${e.role ? ` (${e.role})` : ""} on ${e.type}`)
+                            .join("; ")}
+                    </div>
+                    <div className="mt-0.5 italic">
+                        No rule conflict — you're fine to submit.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+    return (
+        <div
+            className="flex items-start gap-2 px-3 py-2 rounded text-xs"
+            style={{
+                background: "hsl(142 62% 35% / 0.1)",
+                color: "hsl(142 62% 25%)",
+                border: "1px solid hsl(142 62% 35% / 0.4)",
+            }}
+            data-testid={`rl-slot-${row.date}`}
+        >
+            <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+                <div className="font-semibold">Slot is open</div>
+                <div className="mt-0.5">No one else is off on this date.</div>
             </div>
         </div>
     );
