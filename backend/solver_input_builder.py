@@ -17,6 +17,9 @@ _STAFF_FIELDS = (
     "preferred_off_days",
     "accepts_overtime",
     "shift_preference",
+    # Role flags — solver derives senior/manager/flexi lists from these
+    # instead of hard-coded initials.
+    "is_manager", "is_deputy", "is_senior", "is_flexi", "is_night",
 )
 
 

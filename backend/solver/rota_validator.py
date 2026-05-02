@@ -305,9 +305,11 @@ def validate_rota(
                         affected_cells=[{"date": d, "staff_initials": s} for d in week_strs]))
 
     # --- senior_weekend_cover ------------------------------------------
-    # For each Sat and Sun, at least one of {L.M., L.D.} must be on D or D*.
+    # For each Sat and Sun, at least one senior must be on D or D*.
+    # De-hardcoded: derive from staff `is_senior` flag, falling back to
+    # the historic pair ("L.M.", "L.D.") for unmigrated data.
     # AL exemption: skip when BOTH seniors are on AL/TRN that day.
-    SENIOR_STAFF = ("L.M.", "L.D.")
+    SENIOR_STAFF = tuple(s["initials"] for s in staff if s.get("is_senior")) or ("L.M.", "L.D.")
     mode_sw = _mode_for(rules_config, "senior_weekend_cover", "hard")
     present_seniors = [s for s in SENIOR_STAFF if s in staff_by]
     if mode_sw != "off" and present_seniors:

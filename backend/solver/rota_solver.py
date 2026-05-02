@@ -115,7 +115,26 @@ DEFAULT_RULE_MODES = {
     "pair_companion_on_day": "soft",
 }
 
-SENIOR_STAFF = ("L.M.", "L.D.")
+# ---------------------------------------------------------------------------
+# Legacy fallback — only used when the staff collection hasn't been migrated
+# to carry the `is_senior` flag yet. New code path auto-detects seniors via
+# `_derive_senior_staff(staff_list)` so roles/initials aren't hard-coded.
+SENIOR_STAFF_FALLBACK = ("L.M.", "L.D.")
+
+
+def _derive_senior_staff(staff_list: list[dict]) -> tuple[str, ...]:
+    """Return the initials of staff flagged `is_senior: True`.
+
+    If no staff carries the flag (legacy / unmigrated data) fall back
+    to the historic hard-coded pair so the solver still works. The
+    seeder migrates existing staff to set the flag on L.M. and L.D. at
+    boot time. Managers can toggle the flag per-staff on /staff.
+    """
+    flagged = tuple(s["initials"] for s in staff_list if s.get("is_senior"))
+    return flagged or SENIOR_STAFF_FALLBACK
+
+
+SENIOR_STAFF = SENIOR_STAFF_FALLBACK  # kept as a module-level default
 
 DOW_FROM_STR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -602,7 +621,10 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     # Rotation (preferred senior per week) is a SOFT nudge on top.
     # -----------------------------------------------------------------
     senior_mode = modes.get("senior_weekend_cover", "hard")
-    present_seniors = [s for s in SENIOR_STAFF if s in staff_by]
+    # De-hardcoded: derive senior list from staff `is_senior` flag;
+    # falls back to historic ("L.M.", "L.D.") if no staff carries it.
+    seniors_active = _derive_senior_staff(payload["staff"])
+    present_seniors = [s for s in seniors_active if s in staff_by]
     if senior_mode != "off" and present_seniors:
         for di, dt in enumerate(days):
             if dt.weekday() >= 5:  # Sat=5, Sun=6
@@ -651,8 +673,10 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
     # other staff.
     # -----------------------------------------------------------------
     aps_mode = modes.get("avoid_pair_seniors", "soft")
-    if aps_mode != "off" and all(s in staff_by for s in SENIOR_STAFF):
-        a, b = SENIOR_STAFF
+    # De-hardcoded — operate on the first two flagged seniors (commonly
+    # the deputy + senior care support pair).
+    if aps_mode != "off" and len(present_seniors) >= 2:
+        a, b = present_seniors[0], present_seniors[1]
         for di in range(n_days):
             a_day = x[a][di]["D"] + x[a][di]["D*"]
             b_day = x[b][di]["D"] + x[b][di]["D*"]

@@ -34,7 +34,7 @@ import logging
 import os
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,7 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -137,6 +137,12 @@ class StaffIn(BaseModel):
     preferred_off_days: list[str] = []
     accepts_overtime: bool = False
     shift_preference: str = "no_preference"  # "day" | "night" | "no_preference"
+    # Role flags (de-hardcoded solver lookup, editable per staff).
+    is_manager: bool = False
+    is_deputy: bool = False
+    is_senior: bool = False
+    is_flexi: bool = False
+    is_night: bool = False
     active: bool = True
 
 
@@ -158,6 +164,11 @@ class StaffPatch(BaseModel):
     preferred_off_days: list[str] | None = None
     accepts_overtime: bool | None = None
     shift_preference: str | None = None
+    is_manager: bool | None = None
+    is_deputy: bool | None = None
+    is_senior: bool | None = None
+    is_flexi: bool | None = None
+    is_night: bool | None = None
     active: bool | None = None
 
 
@@ -344,6 +355,64 @@ async def update_staff(staff_id: str, patch: StaffPatch, current=Depends(auth_re
     if not res:
         raise HTTPException(status_code=404, detail="Staff not found")
     return res
+
+
+@api.get("/staff/{staff_id}/references")
+async def staff_references(staff_id: str, current=Depends(auth_required)):
+    """Return every place in the system that references this staff
+    member — rules that name them, rota assignments, leave, requests,
+    request-tokens. Used by the /staff delete confirm dialog to warn
+    the manager BEFORE they remove someone and break configured rules.
+    """
+    staff = await db.staff.find_one({"id": staff_id}, {"_id": 0})
+    if not staff:
+        raise HTTPException(404, "Staff not found")
+    initials = staff["initials"]
+    # Leave / requests / tokens counts
+    leave_count = await db.leave.count_documents({"staff_initials": initials})
+    requests_count = await db.requests.count_documents({"staff_initials": initials})
+    tokens_count = await db.request_tokens.count_documents({"staff_initials": initials, "revoked": {"$ne": True}})
+    # Assignments: sum across non-archived rotas
+    asg_count = 0
+    async for r in db.rotas.find({}, {"_id": 0, "assignments": 1}):
+        for a in (r.get("assignments") or []):
+            if a.get("staff_initials") == initials and a.get("shift") not in (None, ""):
+                asg_count += 1
+    # Rule references
+    rules_doc = await db.rules_config.find_one({}, {"_id": 0}) or {}
+    rule_hits: list[dict] = []
+    for rid, rule_val in (rules_doc.get("rules") or {}).items():
+        if not isinstance(rule_val, dict):
+            continue
+        params = rule_val.get("params") or {}
+        # Common shapes: staff_initials: [...], staff_initials: "X.Y.",
+        # rules: [{staff_initials: [...], ...}], staff_overrides: {X.Y.: ...}
+        hit = False
+        def _touch(obj):
+            nonlocal hit
+            if isinstance(obj, str):
+                if obj == initials:
+                    hit = True
+            elif isinstance(obj, list):
+                for o in obj:
+                    _touch(o)
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k == initials:
+                        hit = True
+                    _touch(v)
+        _touch(params)
+        if hit:
+            rule_hits.append({"rule_id": rid, "mode": rule_val.get("mode", "soft")})
+    return {
+        "staff_initials": initials,
+        "full_name": staff.get("full_name"),
+        "leave_count": leave_count,
+        "requests_count": requests_count,
+        "active_tokens_count": tokens_count,
+        "assignments_count": asg_count,
+        "rule_references": rule_hits,
+    }
 
 
 @api.delete("/staff/{staff_id}")
@@ -1179,7 +1248,23 @@ async def delete_leave(leave_id: str, current=Depends(auth_required)):
 @api.get("/requests")
 async def list_requests(current=Depends(auth_required), status: str | None = None):
     q = {"status": status} if status else {}
-    return await db.requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    rows = await db.requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    # Decorate each pending row with a `conflicts` block so the manager
+    # can see clashes at a glance (other staff already on leave same day
+    # / role-collision for OFF / AL requests).
+    for r in rows:
+        if r.get("status") != "pending":
+            r["conflicts"] = None
+            continue
+        try:
+            r["conflicts"] = await _check_leave_slot(
+                r.get("staff_initials", ""),
+                r.get("date", ""),
+                r.get("shift_preference", "") or "",
+            )
+        except Exception:
+            r["conflicts"] = None
+    return rows
 
 
 @api.post("/requests")
@@ -1271,43 +1356,92 @@ async def bulk_patch_requests(payload: RequestBulkPatch, current=Depends(auth_re
 # ============================================================================
 # Request tokens (Phase 2)
 # ============================================================================
+async def _shorten_with_tinyurl(long_url: str) -> str | None:
+    """Call TinyURL's free no-auth API to shorten a URL. Returns the short
+    URL on success, or None on any failure (timeout, non-200, parse error).
+
+    TinyURL free API: https://tinyurl.com/api-create.php?url=<encoded>
+    No tracking requirements beyond standard rate limits — fine for
+    public-facing staff request links.
+    """
+    import httpx
+    import urllib.parse as up
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            resp = await client.get(
+                "https://tinyurl.com/api-create.php",
+                params={"url": long_url},
+            )
+            if resp.status_code != 200:
+                logger.warning("TinyURL non-200 (%d) for %s", resp.status_code, long_url)
+                return None
+            short = (resp.text or "").strip()
+            if not short.startswith("http"):
+                logger.warning("TinyURL returned bad payload: %r", short[:100])
+                return None
+            return short
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TinyURL call failed: %s", exc)
+        return None
+
+
+def _public_base_url(request: Request) -> str:
+    """Return the public origin (scheme://host) the request came in on, e.g.
+    'https://care-rota-engine.preview.emergentagent.com'. Honours the
+    `X-Forwarded-Host` / `X-Forwarded-Proto` headers set by the ingress
+    so internal pod-localhost requests don't accidentally produce a
+    private URL. Manager can override via BASE_APP_URL env var if needed.
+    """
+    env_url = os.environ.get("BASE_APP_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    fwd_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    fwd_proto = request.headers.get("x-forwarded-proto", "https")
+    return f"{fwd_proto}://{fwd_host}"
+
+
 @api.get("/request-tokens")
 async def list_tokens(current=Depends(auth_required)):
     return await db.request_tokens.find({"revoked": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 
 @api.post("/request-tokens")
-async def create_token(payload: TokenCreate, current=Depends(auth_required)):
+async def create_token(payload: TokenCreate, request: Request, current=Depends(auth_required)):
     """Generate a SHORT request-link token for a staff member.
 
     The token is a 6-char base62 string (e.g. `x7kbP9`) so the URL stays
     pasteable in a text message. We retry on the (very unlikely) collision.
-    Existing long-format UUID tokens still resolve via the public lookup
-    endpoint — only newly-issued tokens are short.
+    The full URL is then run through TinyURL to produce an even shorter
+    link the manager can text/email to the staff member. If TinyURL is
+    unreachable or times out we fall back to the long URL only — token
+    creation never blocks on the external API.
 
     Custom-hostname note: the public URL is served from the deployment
-    host (e.g. `<app>.preview.emergentagent.com`). To shorten the host
-    too, point a custom CNAME at the deployment via the platform deploy
-    config — that's a deploy-time change, not an app-code change.
+    host (e.g. `<app>.preview.emergentagent.com`). Set BASE_APP_URL env
+    var to override.
     """
     import string
     alphabet = string.ascii_letters + string.digits  # 62 chars
     for _ in range(8):
         token = "".join(secrets.choice(alphabet) for _ in range(6))
-        # Collision check — token is the unique key on the request-token row
         existing = await db.request_tokens.find_one({"token": token}, {"_id": 0, "id": 1})
         if not existing:
             break
     else:
-        # 8 collisions in a row would mean we're full at 6 chars (62^6 = 56B
-        # combos) — fall back to a longer token to guarantee uniqueness.
         token = secrets.token_urlsafe(8)
+
+    base = _public_base_url(request)
+    long_url = f"{base}/r/{token}"
+    short_url = await _shorten_with_tinyurl(long_url)
+
     doc = {
         "id": str(uuid.uuid4()),
         "token": token,
         "staff_initials": payload.staff_initials,
         "expires_at": (datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)).isoformat(),
         "revoked": False,
+        "long_url": long_url,
+        "short_url": short_url,
         "created_at": _now(),
     }
     await db.request_tokens.insert_one(doc)
@@ -1344,21 +1478,114 @@ async def _resolve_token(token: str) -> dict:
 async def public_get(token: str):
     doc = await _resolve_token(token)
     staff = await db.staff.find_one({"initials": doc["staff_initials"]}, {"_id": 0, "password_hash": 0})
-    settings = await db.settings.find_one({}, {"_id": 0}) or {}
-    start = settings.get("rota_start_date_default", "2026-04-20")
-    weeks = settings.get("rota_length_weeks", 4)
-    end_dt = datetime.strptime(start, "%Y-%m-%d") + timedelta(days=weeks * 7 - 1)
+    # The request window now spans from today up to Dec 31 of the
+    # following year — gives staff a long runway to plan holidays per
+    # user request (prev behaviour was the current 4-week rota only).
+    today = datetime.now(timezone.utc).date()
+    end_of_next_year = date(today.year + 1, 12, 31)
     return {
         "staff_initials": doc["staff_initials"],
         "name": staff.get("full_name") if staff else doc["staff_initials"],
+        "role": (staff or {}).get("role", ""),
         "valid_until": doc["expires_at"],
-        "current_rota_window": {"from": start, "to": end_dt.strftime("%Y-%m-%d")},
+        "window": {"from": today.isoformat(), "to": end_of_next_year.isoformat()},
+        # Kept for backward compatibility with older public pages.
+        "current_rota_window": {"from": today.isoformat(), "to": end_of_next_year.isoformat()},
     }
+
+
+async def _check_leave_slot(staff_initials: str, date_str: str, preference: str) -> dict:
+    """Return {slot_open, reason, existing_leave} describing whether a
+    staff member can realistically get a given off-type request
+    approved without hard-rule conflicts.
+
+    Rules honoured:
+      - `max_one_per_role_on_al`: a role can only have ONE staff on AL
+        / OFF on the same date. (Manager is exempt.)
+      - Existing leave for the same staff / same date blocks the slot.
+    """
+    preference = (preference or "").upper()
+    is_off_type = preference in {"OFF", "AL"}
+    # Only block on AL-type requests (working-shift prefs never clash here)
+    if not is_off_type:
+        return {"slot_open": True, "reason": None, "existing_leave": []}
+
+    staff = await db.staff.find_one({"initials": staff_initials}, {"_id": 0})
+    if not staff:
+        return {"slot_open": False, "reason": "Staff not found", "existing_leave": []}
+
+    # Find existing leave rows that fall on this date.
+    existing = await db.leave.find(
+        {"date": date_str, "type": {"$in": ["AL", "OFF_REQ"]}}, {"_id": 0}
+    ).to_list(50)
+    existing_leave = [
+        {"staff_initials": e["staff_initials"], "type": e["type"]}
+        for e in existing
+    ]
+    # Self already has leave on that date?
+    if any(e["staff_initials"] == staff_initials for e in existing_leave):
+        return {
+            "slot_open": False,
+            "reason": f"{staff_initials} is already on leave on {date_str}.",
+            "existing_leave": existing_leave,
+        }
+
+    # Role-collision check (max one per role on AL).
+    staff_role = (staff.get("role") or "").strip().lower()
+    is_manager = bool(staff.get("is_admin_only") or staff.get("is_manager"))
+    if is_manager or not staff_role:
+        # Manager is exempt — they're admin-only; role-collision doesn't
+        # apply. Also skip when role is missing.
+        return {"slot_open": True, "reason": None, "existing_leave": existing_leave}
+    same_role_staff = await db.staff.find(
+        {"role": {"$regex": f"^{staff_role}$", "$options": "i"},
+         "initials": {"$ne": staff_initials}}, {"_id": 0}
+    ).to_list(50)
+    same_role_initials = {s["initials"] for s in same_role_staff}
+    clashing = [e for e in existing_leave if e["staff_initials"] in same_role_initials]
+    if clashing:
+        names = ", ".join(sorted({e["staff_initials"] for e in clashing}))
+        return {
+            "slot_open": False,
+            "reason": (
+                f"{names} ({staff_role}) is already on AL on {date_str} — "
+                f"only one {staff_role} can be on AL the same day."
+            ),
+            "existing_leave": existing_leave,
+        }
+    return {"slot_open": True, "reason": None, "existing_leave": existing_leave}
+
+
+@api.get("/public/request-link/{token}/check")
+async def public_slot_check(
+    token: str,
+    date_param: str = Query(..., alias="date"),
+    preference: str = Query(default="OFF"),
+):
+    """Public slot-availability check the staff page uses BEFORE submit
+    to show a green/red hint about whether the request is likely to be
+    approved."""
+    doc = await _resolve_token(token)
+    return await _check_leave_slot(doc["staff_initials"], date_param, preference)
 
 
 @api.post("/public/request-link/{token}/submit")
 async def public_submit(token: str, payload: PublicSubmitIn):
     doc = await _resolve_token(token)
+    # Validate every submitted date falls inside the public window.
+    today = datetime.now(timezone.utc).date()
+    end_of_next_year = date(today.year + 1, 12, 31)
+    for r in payload.requests:
+        try:
+            d = datetime.strptime(r.get("date") or "", "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(422, f"Invalid date format: {r.get('date')!r}")
+        if d < today or d > end_of_next_year:
+            raise HTTPException(
+                422,
+                f"Date {d.isoformat()} is outside the request window "
+                f"({today.isoformat()} — {end_of_next_year.isoformat()})",
+            )
     created: list[dict] = []
     for r in payload.requests:
         req = {

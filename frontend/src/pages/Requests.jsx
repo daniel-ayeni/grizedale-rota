@@ -131,11 +131,12 @@ export default function Requests() {
                             <TableHead className="hidden md:table-cell">Notes</TableHead>
                             <TableHead>Source</TableHead>
                             <TableHead>Status</TableHead>
+                            <TableHead>Conflicts</TableHead>
                             <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {reqs.length === 0 && <TableRow><TableCell colSpan={tab === "pending" ? 8 : 7} className="text-center py-8 text-sm text-muted-foreground">No requests</TableCell></TableRow>}
+                        {reqs.length === 0 && <TableRow><TableCell colSpan={tab === "pending" ? 9 : 8} className="text-center py-8 text-sm text-muted-foreground">No requests</TableCell></TableRow>}
                         {reqs.map((r) => (
                             <TableRow key={r.id} data-testid={`req-row-${r.id}`}>
                                 {tab === "pending" && (
@@ -149,6 +150,21 @@ export default function Requests() {
                                 <TableCell className="hidden md:table-cell text-sm text-muted-foreground max-w-xs truncate">{r.notes || "—"}</TableCell>
                                 <TableCell><span className="text-xs uppercase">{r.source}</span></TableCell>
                                 <TableCell><Badge variant={STATUS_BADGE[r.status] || "outline"}>{r.status}</Badge></TableCell>
+                                <TableCell data-testid={`req-${r.id}-conflicts`}>
+                                    {r.conflicts ? (
+                                        r.conflicts.slot_open ? (
+                                            <Badge variant="outline" className="text-xs" title="No conflicts — safe to accept">✓ Open</Badge>
+                                        ) : (
+                                            <Badge
+                                                className="text-xs cursor-help"
+                                                style={{ background: "hsl(var(--accent-red) / 0.15)", color: "hsl(var(--accent-red))", border: "1px solid hsl(var(--accent-red) / 0.4)" }}
+                                                title={r.conflicts.reason || "Slot taken"}
+                                            >
+                                                ⚠ {(r.conflicts.existing_leave || []).map((e) => e.staff_initials).join(", ") || "Conflict"}
+                                            </Badge>
+                                        )
+                                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                                </TableCell>
                                 <TableCell className="text-right">
                                     {r.status === "pending" ? (
                                         <div className="flex justify-end gap-1">
@@ -236,17 +252,24 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
         if (!staffPick) return;
         try {
             const { data } = await api.post("/request-tokens", { staff_initials: staffPick, expires_in_days: days });
-            const fullUrl = `${window.location.origin}${data.url}`;
-            await navigator.clipboard.writeText(fullUrl).catch(() => {});
-            toast.success("Link copied to clipboard");
+            // Backend now returns both short_url (via TinyURL) and long_url.
+            // Copy the short one if available.
+            const longUrl = data.long_url || `${window.location.origin}${data.url}`;
+            const linkToCopy = data.short_url || longUrl;
+            await navigator.clipboard.writeText(linkToCopy).catch(() => {});
+            toast.success(data.short_url
+                ? "Short link copied to clipboard (via TinyURL)"
+                : "Link copied to clipboard");
             onChange();
         } catch (err) { toast.error(formatApiError(err)); }
     };
 
-    const copyOne = async (token) => {
-        const url = `${window.location.origin}/r/${token}`;
+    const copyOne = async (t) => {
+        // Prefer the TinyURL short_url; fall back to long_url; then build
+        // from token (legacy rows that pre-date the long_url field).
+        const url = t.short_url || t.long_url || `${window.location.origin}/r/${t.token}`;
         await navigator.clipboard.writeText(url).catch(() => {});
-        toast.success("Link copied");
+        toast.success(t.short_url ? "Short link copied (via TinyURL)" : "Link copied");
     };
 
     const revoke = async (id) => {
@@ -282,7 +305,8 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                     <Label className="text-xs uppercase tracking-wider text-muted-foreground">Active links · {tokens.length}</Label>
                     {tokens.length === 0 && <div className="text-sm text-muted-foreground py-2">No active links</div>}
                     {tokens.map((t) => {
-                        const fullUrl = `${window.location.origin}/r/${t.token}`;
+                        const longUrl = t.long_url || `${window.location.origin}/r/${t.token}`;
+                        const shortUrl = t.short_url;
                         return (
                             <div key={t.id} className="p-2 rounded border space-y-1.5" style={{ borderColor: "hsl(var(--border))" }} data-testid={`link-row-${t.id}`}>
                                 <div className="flex items-center justify-between gap-2">
@@ -291,7 +315,7 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                                         <div className="text-xs text-muted-foreground">expires {t.expires_at?.slice(0, 10)}</div>
                                     </div>
                                     <div className="flex gap-1 shrink-0">
-                                        <Button size="sm" variant="outline" onClick={() => copyOne(t.token)} data-testid={`link-copy-${t.id}`}>
+                                        <Button size="sm" variant="outline" onClick={() => copyOne(t)} data-testid={`link-copy-${t.id}`}>
                                             <Copy className="w-3.5 h-3.5 mr-1" /> Copy link
                                         </Button>
                                         <Button size="sm" variant="ghost" onClick={() => revoke(t.id)} data-testid={`link-revoke-${t.id}`} title="Revoke link">
@@ -299,19 +323,39 @@ function ManageLinksDrawer({ open, onOpenChange, staff, tokens, onChange }) {
                                         </Button>
                                     </div>
                                 </div>
-                                {/* Short path chip — what the staff member needs */}
-                                <code
-                                    className="block px-2 py-1 rounded font-mono text-sm font-semibold cursor-pointer select-all"
-                                    style={{ background: "hsl(var(--bg-elev))", color: "hsl(var(--primary))" }}
-                                    onClick={() => copyOne(t.token)}
-                                    data-testid={`link-short-${t.id}`}
-                                    title="Click to copy full link"
-                                >
-                                    /r/{t.token}
-                                </code>
-                                <div className="text-[10px] text-muted-foreground truncate select-all" title={fullUrl}>
-                                    {fullUrl}
-                                </div>
+                                {/* PRIMARY chip — TinyURL short URL when we have one. */}
+                                {shortUrl ? (
+                                    <>
+                                        <code
+                                            className="block px-2 py-1.5 rounded font-mono text-sm font-semibold cursor-pointer select-all"
+                                            style={{ background: "hsl(var(--bg-elev))", color: "hsl(var(--primary))" }}
+                                            onClick={() => copyOne(t)}
+                                            data-testid={`link-short-${t.id}`}
+                                            title="Click to copy short link"
+                                        >
+                                            {shortUrl}
+                                        </code>
+                                        <div className="text-[10px] text-muted-foreground italic">
+                                            via TinyURL · expanded: <span className="select-all" title={longUrl}>{longUrl.replace(/^https?:\/\//, "")}</span>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        {/* Fallback when TinyURL was unreachable — long URL only. */}
+                                        <code
+                                            className="block px-2 py-1.5 rounded font-mono text-xs cursor-pointer select-all"
+                                            style={{ background: "hsl(var(--bg-elev))", color: "hsl(var(--primary))" }}
+                                            onClick={() => copyOne(t)}
+                                            data-testid={`link-short-${t.id}`}
+                                            title="Click to copy link"
+                                        >
+                                            {longUrl}
+                                        </code>
+                                        <div className="text-[10px] text-muted-foreground italic">
+                                            (TinyURL unavailable — using long link)
+                                        </div>
+                                    </>
+                                )}
                                 <div className="text-[10px] text-muted-foreground italic">
                                     Staff can bookmark this link.
                                 </div>

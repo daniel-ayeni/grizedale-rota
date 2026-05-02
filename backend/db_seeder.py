@@ -149,6 +149,40 @@ async def seed_if_empty(db) -> dict:
         logger.info("Migration: backfilled shift_preference=no_preference on %d staff", res_pref.modified_count)
         summary["migration_shift_preference"] = res_pref.modified_count
 
+    # MIGRATION: role flags. De-hardcode solver constraints that
+    # previously referenced "J.C.", "L.M.", "L.D." etc. by literal
+    # initials. Flags are on the staff doc so managers can promote /
+    # demote without touching code.
+    role_flag_defaults = {
+        "J.C.": {"is_manager": True,  "is_deputy": False, "is_senior": False, "is_flexi": False, "is_night": False},
+        "L.M.": {"is_manager": False, "is_deputy": True,  "is_senior": True,  "is_flexi": False, "is_night": False},
+        "L.D.": {"is_manager": False, "is_deputy": False, "is_senior": True,  "is_flexi": False, "is_night": False},
+        "D.A.": {"is_manager": False, "is_deputy": False, "is_senior": False, "is_flexi": True,  "is_night": False},
+        "T.D.": {"is_manager": False, "is_deputy": False, "is_senior": False, "is_flexi": True,  "is_night": False},
+        "C.E.": {"is_manager": False, "is_deputy": False, "is_senior": False, "is_flexi": False, "is_night": True},
+        "A.A.": {"is_manager": False, "is_deputy": False, "is_senior": False, "is_flexi": False, "is_night": True},
+        "J.R.": {"is_manager": False, "is_deputy": False, "is_senior": False, "is_flexi": False, "is_night": True},
+    }
+    role_flag_updates = 0
+    for init, flags in role_flag_defaults.items():
+        # Only fill fields that are missing — don't overwrite manager edits.
+        missing_query = {"initials": init, "$or": [
+            {f: {"$exists": False}} for f in flags.keys()
+        ]}
+        res = await db.staff.update_one(missing_query, {"$set": {**flags, "updated_at": _now_iso()}})
+        role_flag_updates += res.modified_count
+    # Anyone not in the canonical list gets defaults where missing.
+    default_flags = {"is_manager": False, "is_deputy": False, "is_senior": False, "is_flexi": False, "is_night": False}
+    for flag, val in default_flags.items():
+        res = await db.staff.update_many(
+            {flag: {"$exists": False}},
+            {"$set": {flag: val, "updated_at": _now_iso()}},
+        )
+        role_flag_updates += res.modified_count
+    if role_flag_updates > 0:
+        logger.info("Migration: set role flags on %d staff docs", role_flag_updates)
+        summary["migration_role_flags"] = role_flag_updates
+
     # MIGRATION: backfill `display_order` field — match the seed JSON
     # array order (manager → deputy → seniors → flexis → nights). Both the
     # /staff page and the rota grid sort rows by display_order ASC, and
