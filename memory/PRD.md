@@ -19,6 +19,29 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 
 ## What's been implemented (latest first)
 
+### 2026-05-02 (later) — Staff link UX overhaul
+- **Slot check shape upgraded** (`/api/public/request-link/{t}/check`):
+  returns `{slot_status: open|role_conflict|hard_limit, existing_leave:
+  [{staff_initials, role, type}, ...], would_break_rules: [...]}` plus
+  back-compat `slot_open + reason`. Surfaces ANY leave on the date so
+  the public page can show an amber FYI chip when other staff (different
+  role) are off — no longer reports "open" when in fact someone clashes.
+- **Validity banner on /r/{token}**: "This link is valid until <Day, DD
+  Month YYYY> · X days left" — turns amber when <3 days remain. Backed
+  by existing `valid_until` field.
+- **Modern/Paper theme toggle on the public page**: top-right header
+  button, persists in `localStorage['grizedale_theme']` like the main
+  app. Default Modern.
+- **URL shortener swap (TinyURL → is.gd → da.gd → direct)**: removes
+  the TinyURL "suspicious URL" preview interstitial. is.gd / da.gd both
+  do clean 301 direct redirects. Token doc carries `short_url_provider`;
+  Requests drawer renders "via <provider> · expanded: …".
+- **3-state SlotBanner** on /r/{token}: red "Slot taken" with offending
+  staff/role/reason · amber "FYI — others off this day" listing them ·
+  green "Slot is open". Submit button stays enabled in every state —
+  staff submit, manager decides.
+
+
 ### 2026-05-02 — De-hardcode solver, role-flag UI, override dialog
 - **Solver fully de-hardcoded**: `rota_solver.py`, `rota_validator.py`, and
   `rule_definitions.py` contain ZERO staff-initial string literals. All
