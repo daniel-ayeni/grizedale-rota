@@ -19,6 +19,32 @@ solver-backed web app (FastAPI + React + Mongo) that produces valid rotas.
 
 ## What's been implemented (latest first)
 
+### 2026-05-03 (later) — Print-fix v3 + rule lock toggle
+- **Excel print regression FIXED**: Switched from A3 + fit-to-1×1 to A4
+  landscape with NATURAL column widths sized to fill the page (A=12,
+  day=4.9, total ~149 Excel units = ~28 cm). Row heights bumped (title
+  30pt, headers 28pt, staff 56pt) so the 11-row rota fills A4 landscape
+  vertically without scaling. fitToHeight set back to 0 (no upward
+  fit), fitToWidth=1 kept as safety. Print preview now fills 85-90% of
+  page width and 65-75% of height — comparable to the PDF reference
+  the user shared. Summary sheet also gets bounded print_area.
+- **Lock toggle on every rule card**: New `[🔒 Locked / 🔓 Unlocked]`
+  toggle button on each /rules card. State persisted as
+  `rules.<id>.immovable: bool` via PUT /api/rules (back end already
+  accepts arbitrary rule fields). Locked → Hard/Soft/Off + weight slider
+  + params editor disabled with hint "This rule is locked. Click
+  Locked above to unlock and edit." Solver behaviour is unaffected by
+  lock state — lock is purely a UI freeze.
+- **Safety-rule unlock confirmation**: For the safety set
+  (`day_cover`, `night_cover`, `no_n_to_d`, `no_dstar_to_dstar`,
+  `manager_no_shifts`, `max_one_per_role_on_al`, `no_sleepover_before_leave`)
+  the unlock gesture opens an AlertDialog with "I understand the risk
+  of editing this rule" ack checkbox. Unlock button gated until ack.
+  Non-safety immovable rules unlock with a single click.
+- **Solver / validator behaviour unchanged**: Lock is purely
+  presentational — solver runs whatever Hard/Soft/Off mode is in DB.
+
+
 ### 2026-05-02 (later) — Staff link UX overhaul
 - **Slot check shape upgraded** (`/api/public/request-link/{t}/check`):
   returns `{slot_status: open|role_conflict|hard_limit, existing_leave:

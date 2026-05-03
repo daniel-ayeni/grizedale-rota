@@ -130,8 +130,9 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
         ident.font = Font(bold=True, size=12)
         ident.alignment = Alignment(horizontal="center", vertical="center")
         ident.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-        # Taller staff rows for readability when printed.
-        ws.row_dimensions[row].height = 36
+        # Taller staff rows so the 8-staff grid fills A4 landscape
+        # vertically without scaling.
+        ws.row_dimensions[row].height = 56
         for di, d in enumerate(days):
             col = di + 2
             cell_doc = asg.get((d.isoformat(), s["initials"]), {})
@@ -151,39 +152,48 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
             right = THICK if (di + 1) % 7 == 0 and di < len(days) - 1 else THIN
             cell.border = Border(left=THIN, right=right, top=THIN, bottom=THIN)
 
-    # ── Column widths + freeze panes ──────────────────────────────
-    ws.column_dimensions["A"].width = 10   # narrower identity — initials only
+    # ── Column widths — sized so the NATURAL width fills A4 landscape
+    # without ANY scaling. A4 landscape usable width with 0.4" margins
+    # = ~277 mm. Excel units → ~1.85 mm per unit → ~149 units fit.
+    # 1×12 (ident) + 28×4.9 (day) = 12 + 137.2 ≈ 149 units → table
+    # touches both edges naturally; fit-to-page becomes a no-op.
+    ws.column_dimensions["A"].width = 12     # initials only
     for di in range(len(days)):
-        ws.column_dimensions[get_column_letter(di + 2)].width = 4.5
+        ws.column_dimensions[get_column_letter(di + 2)].width = 4.9
+    # Row heights — fill the A4 landscape vertically too. Usable height
+    # ≈ 190 mm = 538 pt. Title 30 + 2 headers × 28 + N staff × 56
+    # ≈ 30 + 56 + 8×56 = 534 pt → table fills the page top-to-bottom.
+    ws.row_dimensions[1].height = 30          # title
+    ws.row_dimensions[2].height = 28
+    ws.row_dimensions[3].height = 28
+    # Staff body rows are set per-row below; bump from 36 → 56 so the
+    # 8-staff grid fills the A4 landscape page without Excel having to
+    # shrink anything.
     # Freeze first column + first 3 rows (title + day-letter + date)
     ws.freeze_panes = "B4"
 
-    # ── Page setup — landscape A3, fit to EXACTLY 1 page × 1 page ─
-    # The rota is small (29 cols × ~11 rows). On A3 landscape at
-    # natural scale the table only fills ~30% of the page — the user
-    # perceived that as "shrunken content surrounded by empty cells".
-    # Fix: fit-to-1-wide AND fit-to-1-tall so Excel scales UP to fill
-    # the page. print_area is bounded so Excel only prints the actual
-    # table range (A1:AC<last staff row>) — no stray empty cells.
+    # ── Page setup — A4 landscape, NO scaling (natural size fills) ─
+    # Earlier attempts with fit-to-page made Excel shrink the table
+    # into ~55% of the page. Fix: column + row sizes above already fill
+    # A4 landscape natively, so we ENABLE fit-to-1-wide as a SAFETY
+    # only (kicks in if a future rota has more days). fit-to-height=0
+    # so vertical sizing stays natural; centered on page; bounded
+    # print_area so empty cells outside the rota are never printed.
     from openpyxl.worksheet.page import PageMargins
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
-    ws.page_setup.paperSize = ws.PAPERSIZE_A3
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 1                        # fit BOTH dims
+    ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    # Slightly tighter margins so more of the page is the rota itself.
     ws.page_margins = PageMargins(
-        left=0.3, right=0.3, top=0.4, bottom=0.4,
+        left=0.4, right=0.4, top=0.4, bottom=0.4,
         header=0.2, footer=0.2,
     )
     ws.print_options.horizontalCentered = True
     ws.print_options.verticalCentered = True
-    # Bounded print area — EXACTLY the rota grid, nothing outside.
     last_col = get_column_letter(1 + len(days))         # 29 → "AC"
     last_row = 3 + len(staff)                            # 3 headers + N staff
     ws.print_area = f"A1:{last_col}{last_row}"
-    # Repeat the first 3 rows (title + day-letters + dates) at the top
-    # of every printed page so multi-page prints stay readable.
     ws.print_title_rows = "1:3"
 
     # ── Sheet 2: Summary ──────────────────────────────────────────

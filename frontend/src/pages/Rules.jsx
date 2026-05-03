@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Lock, Save, Users as UsersIcon, Trash2, RotateCcw } from "lucide-react";
+import { Lock, Unlock, Save, Users as UsersIcon, Trash2, RotateCcw, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
     Tabs, TabsList, TabsTrigger,
 } from "@/components/ui/tabs";
@@ -59,11 +60,29 @@ const MODES = [
     { value: "off", label: "Off" },
 ];
 
+// Rules whose UNLOCK gesture must be confirmed via a warning dialog —
+// the manager is acknowledging they're freeing a safety / cover rule
+// from accidental edits. All other immovable rules unlock with a plain
+// toggle. Locked status itself is just UI freeze; solver behaviour is
+// driven by mode (hard/soft/off) regardless of lock state.
+const SAFETY_RULES = new Set([
+    "day_cover",
+    "night_cover",
+    "no_n_to_d",
+    "no_dstar_to_dstar",
+    "manager_no_shifts",
+    "max_one_per_role_on_al",
+    "no_sleepover_before_leave",
+]);
+
 export default function Rules() {
     const [config, setConfig] = useState(null);
     const [staff, setStaff] = useState([]);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
+    // Holds the rule_def for the safety-unlock warning dialog (or null).
+    const [unlockTarget, setUnlockTarget] = useState(null);
+    const [unlockAck, setUnlockAck] = useState(false);
 
     useEffect(() => {
         Promise.all([
@@ -103,6 +122,38 @@ export default function Rules() {
             },
         }));
         setDirty(true);
+    };
+    /** Persist the manager's lock/unlock decision per rule. UI freezes
+     *  Hard/Soft/Off + weight + params editor when locked; solver
+     *  behaviour is unaffected (it runs whatever mode is currently set).
+     */
+    const setImmovable = (key, locked) => {
+        setConfig((c) => ({
+            ...c,
+            rules: { ...c.rules, [key]: { ...c.rules[key], immovable: !!locked } },
+        }));
+        setDirty(true);
+    };
+    /** Lock/unlock click handler. Calls into setImmovable directly for
+     *  non-safety rules; for safety rules going UNLOCKED → opens the
+     *  warning dialog. Lock direction (already-locked → locked again
+     *  shouldn't happen, but locking from unlocked is always one-click).
+     */
+    const handleLockToggle = (rd, currentlyLocked) => {
+        if (currentlyLocked && SAFETY_RULES.has(rd.key)) {
+            // Going from locked → unlocked on a safety rule. Confirm.
+            setUnlockAck(false);
+            setUnlockTarget(rd);
+            return;
+        }
+        setImmovable(rd.key, !currentlyLocked);
+    };
+    const confirmUnlock = () => {
+        if (unlockTarget) {
+            setImmovable(unlockTarget.key, false);
+        }
+        setUnlockTarget(null);
+        setUnlockAck(false);
     };
 
     const save = async () => {
@@ -181,7 +232,13 @@ export default function Rules() {
             <div className="grid grid-cols-1 gap-3" data-testid="rules-list">
                 {RULE_DEFS.map((rd) => {
                     const r = config.rules[rd.key] || { mode: "off", weight: 0 };
-                    const immovable = rd.immovable || r.immovable;
+                    // Manager's lock decision wins. If they've never set
+                    // immovable on this rule, fall back to the spec
+                    // default (rd.immovable). Hidden flag = unlocked
+                    // (so a freshly-saved rule with immovable:false
+                    // remains editable on reload).
+                    const immovable = (r.immovable !== undefined) ? !!r.immovable : !!rd.immovable;
+                    const isSafety = SAFETY_RULES.has(rd.key);
                     return (
                         <div key={rd.key} className="app-card p-5" data-testid={`rule-${rd.key}`}>
                             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
@@ -193,25 +250,59 @@ export default function Rules() {
                                                 <Lock className="w-3 h-3 mr-1" /> Immovable
                                             </Badge>
                                         )}
+                                        {isSafety && (
+                                            <Badge variant="outline" className="text-[10px] uppercase tracking-wider" style={{ borderColor: "hsl(var(--accent-red) / 0.5)", color: "hsl(var(--accent-red))" }} title="Unlocking requires manager confirmation — controls scheduling safety">
+                                                <AlertTriangle className="w-3 h-3 mr-1" /> Safety
+                                            </Badge>
+                                        )}
                                     </div>
                                     <div className="text-sm text-muted-foreground mt-1">{rd.desc}</div>
                                 </div>
 
-                                <Tabs value={r.mode} onValueChange={(v) => !immovable && setMode(rd.key, v)} className="shrink-0">
-                                    <TabsList data-testid={`rule-${rd.key}-mode`}>
-                                        {MODES.map((m) => (
-                                            <TabsTrigger
-                                                key={m.value}
-                                                value={m.value}
-                                                disabled={immovable && m.value !== r.mode}
-                                                data-testid={`rule-${rd.key}-mode-${m.value}`}
-                                            >
-                                                {m.label}
-                                            </TabsTrigger>
-                                        ))}
-                                    </TabsList>
-                                </Tabs>
+                                <div className="flex items-start gap-3 shrink-0">
+                                    <Tabs value={r.mode} onValueChange={(v) => !immovable && setMode(rd.key, v)} className="shrink-0">
+                                        <TabsList data-testid={`rule-${rd.key}-mode`}>
+                                            {MODES.map((m) => (
+                                                <TabsTrigger
+                                                    key={m.value}
+                                                    value={m.value}
+                                                    disabled={immovable && m.value !== r.mode}
+                                                    data-testid={`rule-${rd.key}-mode-${m.value}`}
+                                                >
+                                                    {m.label}
+                                                </TabsTrigger>
+                                            ))}
+                                        </TabsList>
+                                    </Tabs>
+                                    {/* Lock toggle — always interactive. Flips immovable
+                                        flag; safety-rule unlocks open the confirm dialog. */}
+                                    <button
+                                        type="button"
+                                        onClick={() => handleLockToggle(rd, immovable)}
+                                        className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-2 py-1.5 rounded-md border focus-ring transition-colors"
+                                        style={{
+                                            background: immovable ? "hsl(var(--bg-elev))" : "transparent",
+                                            color: immovable ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                                            borderColor: immovable ? "hsl(var(--border-strong))" : "hsl(var(--border))",
+                                        }}
+                                        data-testid={`rule-${rd.key}-lock-toggle`}
+                                        data-locked={immovable ? "true" : "false"}
+                                        title={immovable ? "Click to unlock and edit this rule" : "Click to lock this rule from edits"}
+                                    >
+                                        {immovable
+                                            ? <><Lock className="w-3.5 h-3.5" /> Locked</>
+                                            : <><Unlock className="w-3.5 h-3.5" /> Unlocked</>}
+                                    </button>
+                                </div>
                             </div>
+
+                            {/* Frozen-state hint — shown only when the rule is locked
+                                so the manager understands why the controls are disabled. */}
+                            {immovable && (
+                                <div className="mt-3 text-xs italic text-muted-foreground" data-testid={`rule-${rd.key}-locked-hint`}>
+                                    This rule is locked. Click <strong>Locked</strong> above to unlock and edit.
+                                </div>
+                            )}
 
                             {r.mode === "soft" && !immovable && (
                                 <div className="mt-4 pt-4 border-t" style={{ borderColor: "hsl(var(--border))" }}>
@@ -333,6 +424,49 @@ export default function Rules() {
                     );
                 })}
             </div>
+
+            {/* Safety-rule unlock confirmation. Asks the manager to ack
+                the risk of unfreezing a scheduling-safety rule before
+                exposing the Hard / Soft / Off + weight + params editor. */}
+            <AlertDialog open={!!unlockTarget} onOpenChange={(v) => { if (!v) { setUnlockTarget(null); setUnlockAck(false); } }}>
+                <AlertDialogContent data-testid="unlock-safety-dialog">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="flex items-center gap-2">
+                            <AlertTriangle className="w-5 h-5 text-destructive" />
+                            Unlock safety rule?
+                        </AlertDialogTitle>
+                        <AlertDialogDescription asChild>
+                            <div className="space-y-3 text-sm">
+                                <div>
+                                    Unlocking <strong>{unlockTarget?.name}</strong> allows you to change a safety
+                                    rule. The system uses this to prevent unsafe scheduling. Are you sure you want
+                                    to unlock?
+                                </div>
+                                <label className="flex items-start gap-2 cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                                    <Checkbox
+                                        id="unlock-ack"
+                                        checked={unlockAck}
+                                        onCheckedChange={(v) => setUnlockAck(!!v)}
+                                        data-testid="unlock-ack"
+                                    />
+                                    <span className="text-xs leading-4">I understand the risk of editing this rule.</span>
+                                </label>
+                            </div>
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel data-testid="unlock-cancel">Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={confirmUnlock}
+                            disabled={!unlockAck}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            data-testid="unlock-confirm"
+                        >
+                            Unlock
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 }
