@@ -147,42 +147,45 @@ export default function Staff() {
                             <TableRow><TableCell colSpan={15} className="text-center text-sm text-muted-foreground py-8">No staff yet</TableCell></TableRow>
                         )}
                         {staff.map((row) => (
-                            <TableRow key={row.id} data-testid={`staff-row-${row.initials}`}>
-                                <TableCell className="font-semibold">{row.initials}</TableCell>
-                                <TableCell>
-                                    <div className="font-medium">{row.full_name}</div>
-                                    <div className="text-xs text-muted-foreground lg:hidden">{row.role}</div>
+                            <TableRow key={row.id} data-testid={`staff-row-${row.initials}`} className="staff-row-compact">
+                                <TableCell className="font-semibold py-1.5">{row.initials}</TableCell>
+                                <TableCell className="py-1.5">
+                                    <div className="font-medium text-sm leading-tight">{row.full_name}</div>
+                                    <div className="text-[11px] text-muted-foreground lg:hidden leading-tight">{row.role}</div>
                                 </TableCell>
-                                <TableCell className="hidden lg:table-cell text-sm text-muted-foreground">
-                                    <div className="text-sm">{row.role}</div>
-                                    <RoleFlagChips row={row} onToggle={(k, v) => togglePatch(row, k, v)} />
+                                <TableCell className="hidden lg:table-cell py-1.5">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="text-xs text-muted-foreground">{row.role}</span>
+                                        <RoleFlagChips row={row} onToggle={(k, v) => togglePatch(row, k, v)} />
+                                    </div>
                                 </TableCell>
-                                <TableCell className="text-center">{row.target_weekly_hours}</TableCell>
-                                <TableCell className="text-center">{row.gender}</TableCell>
-                                <TableCell className="text-center"><Switch checked={row.medication_competent} onCheckedChange={(v) => togglePatch(row, "medication_competent", v)} data-testid={`staff-${row.initials}-med`} /></TableCell>
-                                <TableCell className="text-center"><Switch checked={row.first_aider} onCheckedChange={(v) => togglePatch(row, "first_aider", v)} data-testid={`staff-${row.initials}-fa`} /></TableCell>
-                                <TableCell className="text-center"><Switch checked={row.fire_trained} onCheckedChange={(v) => togglePatch(row, "fire_trained", v)} data-testid={`staff-${row.initials}-fire`} /></TableCell>
-                                <TableCell className="text-center hidden md:table-cell"><Switch checked={row.can_do_days} onCheckedChange={(v) => togglePatch(row, "can_do_days", v)} data-testid={`staff-${row.initials}-day`} /></TableCell>
-                                <TableCell className="text-center hidden md:table-cell"><Switch checked={row.can_do_nights} onCheckedChange={(v) => togglePatch(row, "can_do_nights", v)} data-testid={`staff-${row.initials}-night`} /></TableCell>
-                                <TableCell className="text-center hidden md:table-cell"><Switch checked={row.can_do_sleepover} onCheckedChange={(v) => togglePatch(row, "can_do_sleepover", v)} data-testid={`staff-${row.initials}-sleep`} /></TableCell>
-                                <TableCell className="text-center">
+                                <TableCell className="text-center py-1.5 text-sm tabular-nums">{row.target_weekly_hours}</TableCell>
+                                <TableCell className="text-center py-1.5 text-sm">{row.gender}</TableCell>
+                                <TableCell className="text-center py-1.5"><Switch checked={row.medication_competent} onCheckedChange={(v) => togglePatch(row, "medication_competent", v)} data-testid={`staff-${row.initials}-med`} /></TableCell>
+                                <TableCell className="text-center py-1.5"><Switch checked={row.first_aider} onCheckedChange={(v) => togglePatch(row, "first_aider", v)} data-testid={`staff-${row.initials}-fa`} /></TableCell>
+                                <TableCell className="text-center py-1.5"><Switch checked={row.fire_trained} onCheckedChange={(v) => togglePatch(row, "fire_trained", v)} data-testid={`staff-${row.initials}-fire`} /></TableCell>
+                                <TableCell className="text-center py-1.5 hidden md:table-cell"><Switch checked={row.can_do_days} onCheckedChange={(v) => togglePatch(row, "can_do_days", v)} data-testid={`staff-${row.initials}-day`} /></TableCell>
+                                <TableCell className="text-center py-1.5 hidden md:table-cell"><Switch checked={row.can_do_nights} onCheckedChange={(v) => togglePatch(row, "can_do_nights", v)} data-testid={`staff-${row.initials}-night`} /></TableCell>
+                                <TableCell className="text-center py-1.5 hidden md:table-cell"><Switch checked={row.can_do_sleepover} onCheckedChange={(v) => togglePatch(row, "can_do_sleepover", v)} data-testid={`staff-${row.initials}-sleep`} /></TableCell>
+                                <TableCell className="text-center py-1.5">
                                     <PrefSegmented row={row} onChange={(v) => togglePatch(row, "shift_preference", v)} />
                                 </TableCell>
-                                <TableCell className="text-center"><Switch checked={!!row.accepts_overtime} onCheckedChange={(v) => togglePatch(row, "accepts_overtime", v)} data-testid={`staff-${row.initials}-ot`} /></TableCell>
-                                <TableCell className="text-center"><Switch checked={row.active} onCheckedChange={(v) => togglePatch(row, "active", v)} data-testid={`staff-${row.initials}-active`} /></TableCell>
-                                <TableCell className="text-right">
-                                    <div className="flex justify-end gap-1">
-                                        <Button size="sm" variant="ghost" onClick={() => { setEditing(row); setCreating(false); }} data-testid={`staff-${row.initials}-edit`}>
-                                            <Pencil className="w-4 h-4" />
+                                <TableCell className="text-center py-1.5"><Switch checked={!!row.accepts_overtime} onCheckedChange={(v) => togglePatch(row, "accepts_overtime", v)} data-testid={`staff-${row.initials}-ot`} /></TableCell>
+                                <TableCell className="text-center py-1.5"><Switch checked={row.active} onCheckedChange={(v) => togglePatch(row, "active", v)} data-testid={`staff-${row.initials}-active`} /></TableCell>
+                                <TableCell className="text-right py-1.5">
+                                    <div className="flex justify-end gap-0.5">
+                                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => { setEditing(row); setCreating(false); }} data-testid={`staff-${row.initials}-edit`}>
+                                            <Pencil className="w-3.5 h-3.5" />
                                         </Button>
                                         <Button
                                             size="sm"
                                             variant="ghost"
+                                            className="h-7 w-7 p-0"
                                             onClick={() => setDeleteTarget(row)}
                                             data-testid={`staff-${row.initials}-delete`}
                                             title="Delete staff"
                                         >
-                                            <Trash2 className="w-4 h-4 text-destructive" />
+                                            <Trash2 className="w-3.5 h-3.5 text-destructive" />
                                         </Button>
                                     </div>
                                 </TableCell>
@@ -403,7 +406,7 @@ function PrefSegmented({ row, onChange }) {
  */
 function RoleFlagChips({ row, onToggle }) {
     return (
-        <div className="flex flex-wrap gap-1 mt-1" data-testid={`staff-${row.initials}-roles`}>
+        <div className="flex flex-wrap gap-0.5" data-testid={`staff-${row.initials}-roles`}>
             {ROLE_FLAGS.map((f) => (
                 <RoleChipButton
                     key={f.key}
@@ -423,7 +426,7 @@ function RoleChipButton({ flag, active, onToggle, testid }) {
         <button
             type="button"
             onClick={onToggle}
-            className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border transition-colors"
+            className="text-[9px] leading-none uppercase tracking-wider font-semibold px-1 py-[2px] rounded border transition-colors"
             style={{
                 background: active ? tone.bg : "transparent",
                 color: active ? tone.active : "hsl(var(--muted-foreground))",

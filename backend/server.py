@@ -1253,10 +1253,24 @@ async def delete_leave(leave_id: str, current=Depends(auth_required)):
 async def list_requests(current=Depends(auth_required), status: str | None = None):
     q = {"status": status} if status else {}
     rows = await db.requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+    # Hydrate each row with the requesting staff's role so the UI can
+    # tell "same role" clashes apart from informational different-role
+    # leave on the same date.
+    staff_inits = list({r.get("staff_initials") for r in rows if r.get("staff_initials")})
+    role_by: dict[str, str] = {}
+    if staff_inits:
+        async for s in db.staff.find(
+            {"initials": {"$in": staff_inits}},
+            {"_id": 0, "initials": 1, "role": 1},
+        ):
+            role_by[s["initials"]] = s.get("role", "")
+
     # Decorate each pending row with a `conflicts` block so the manager
     # can see clashes at a glance (other staff already on leave same day
     # / role-collision for OFF / AL requests).
     for r in rows:
+        r["staff_role"] = role_by.get(r.get("staff_initials", ""), "")
         if r.get("status") != "pending":
             r["conflicts"] = None
             continue
@@ -1508,6 +1522,78 @@ async def list_audit_log(
 # ============================================================================
 # Request tokens (Phase 2)
 # ============================================================================
+@api.get("/requests/{req_id}/inspect")
+async def inspect_request(req_id: str, current=Depends(auth_required)):
+    """Manager-side deep-context for a single request.
+
+    Returns everything needed to decide Accept / Reject / Override:
+      - the request itself (staff, date, preference, notes)
+      - the requesting staff's role so the UI can frame same-role clashes
+      - ALL leave rows for that date (any role) with role hydrated
+      - day_assignments from the most recent rota covering that date
+        (if one exists) — lets the manager see who's already on shift
+    Separate from /check so we can surface full rota context, not just
+    slot availability.
+    """
+    req = await db.requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    staff = await db.staff.find_one({"initials": req["staff_initials"]}, {"_id": 0}) or {}
+    date_str = req["date"]
+
+    raw_leave = await db.leave.find(
+        {"date": date_str, "type": {"$in": ["AL", "OFF_REQ", "TRN"]}}, {"_id": 0}
+    ).to_list(50)
+    role_by: dict[str, str] = {}
+    if raw_leave:
+        inits = list({e["staff_initials"] for e in raw_leave})
+        async for s in db.staff.find(
+            {"initials": {"$in": inits}}, {"_id": 0, "initials": 1, "role": 1}
+        ):
+            role_by[s["initials"]] = s.get("role", "")
+    day_leave = [
+        {
+            "staff_initials": e["staff_initials"],
+            "role": role_by.get(e["staff_initials"], ""),
+            "type": e["type"],
+            "notes": e.get("notes", ""),
+        }
+        for e in raw_leave
+    ]
+
+    # Find the most recent rota whose start..end covers this date.
+    day_assignments: list[dict] = []
+    rota_title: str | None = None
+    async for rota in db.rotas.find({}, {"_id": 0}).sort("created_at", -1):
+        try:
+            start = datetime.strptime(rota["start_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        weeks = int(rota.get("weeks", 4))
+        end = start + timedelta(days=weeks * 7 - 1)
+        if start.isoformat() <= date_str <= end.isoformat():
+            rota_title = rota.get("title")
+            # Resolve assignments for that date
+            for a in (rota.get("assignments") or []):
+                if a.get("date") == date_str:
+                    day_assignments.append({
+                        "staff_initials": a.get("staff_initials"),
+                        "shift": a.get("shift"),
+                        "role": role_by.get(a.get("staff_initials"), ""),
+                    })
+            break
+
+    return {
+        "request": req,
+        "staff_role": staff.get("role", ""),
+        "staff_full_name": staff.get("full_name", ""),
+        "day_leave": day_leave,
+        "day_assignments": day_assignments,
+        "rota_title": rota_title,
+    }
+
+
 async def _shorten_url(long_url: str) -> tuple[str | None, str]:
     """Shorten a URL using a chain of free no-auth shorteners that all
     redirect DIRECTLY to the target (no preview / confirmation page).

@@ -153,7 +153,10 @@ def render_rota_pdf(
 
     body_rows: list[list[str]] = []
     for s in staff:
-        ident = f"{(s.get('role') or '').upper()}\n{s['initials']}  {s.get('target_weekly_hours', '')}h"
+        # Identity column — INITIALS ONLY per manager spec. Role + hours
+        # are intentionally omitted: they're on the /staff page and were
+        # cluttering the grid. Just the initials, centered.
+        ident = s["initials"]
         row = [ident]
         for d in days:
             cell = asg.get((d.isoformat(), s["initials"]), {})
@@ -173,7 +176,7 @@ def render_rota_pdf(
     page_w, _page_h = landscape(A3)
     margin = 12 * mm
     avail_w = page_w - 2 * margin
-    ident_w = 95
+    ident_w = 60                 # narrower — initials only
     day_w = (avail_w - ident_w) / len(days)
     col_widths = [ident_w] + [day_w] * len(days)
 
@@ -202,12 +205,13 @@ def render_rota_pdf(
         ("FONT",       (0, 2), (-1, 2), "Helvetica", 8),
         ("ALIGN",      (0, 2), (-1, 2), "CENTER"),
         ("VALIGN",     (0, 2), (-1, 2), "MIDDLE"),
-        # Identity column styling
+        # Identity column styling — initials only, centered + larger font.
         ("BACKGROUND", (0, 3), (0, -1), pal["ident_bg"]),
-        ("FONT",       (0, 3), (0, -1), "Helvetica-Bold", 7),
-        ("ALIGN",      (0, 3), (0, -1), "LEFT"),
+        ("FONT",       (0, 3), (0, -1), "Helvetica-Bold", 11),
+        ("ALIGN",      (0, 3), (0, -1), "CENTER"),
         ("VALIGN",     (0, 3), (0, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 3), (0, -1), 6),
+        ("LEFTPADDING", (0, 3), (0, -1), 2),
+        ("RIGHTPADDING", (0, 3), (0, -1), 2),
         # Default cell styling for body
         ("FONT",  (1, 3), (-1, -1), pal["body_font"], 9),
         ("ALIGN", (1, 3), (-1, -1), "CENTER"),

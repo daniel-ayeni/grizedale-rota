@@ -193,10 +193,29 @@ RULES: list[dict] = [
     {
         "id": "avoid_pair_seniors",
         "name": "Avoid pairing two seniors on the same shift",
-        "description": "When two staff carry the `is_senior` flag, the manager prefers to split them so each pairs with other staff. Penalty when both are on the same working day (D or D*).",
+        "description": "When two staff carry the `is_senior` flag, the manager prefers to split them so each pairs with other staff. Penalty when both are on the same working day (D or D*). DEPRECATED — use `avoid_staff_pairs` for multi-pair configurations.",
+        "severity_default": "off",
+        "immovable": False,
+        "weight_default": 40,
+    },
+    {
+        "id": "avoid_staff_pairs",
+        "name": "Avoid pairing listed staff on day cover",
+        "description": "Manager-configured list of staff PAIRS that should not share day cover (D or D*). Each pair carries its own weight; solver penalises every day they are both on day cover. Use the Rules UI to add / remove pairs — promote, demote or hire new staff and the existing pairs survive. Empty list → rule self-disables.",
         "severity_default": "soft",
         "immovable": False,
         "weight_default": 40,
+        "params_default": {
+            "pairs": [],
+        },
+    },
+    {
+        "id": "weekend_off_per_rota",
+        "name": "Every staff gets ≥1 full weekend off per rota",
+        "description": "For each staff, count weekends (Sat + Sun) in the rota where BOTH days are OFF / AL / TRN. Penalty fires when count == 0. Ensures nobody works every single weekend of the 4-week cycle. Staff on AL for the entire rota are excluded.",
+        "severity_default": "soft",
+        "immovable": False,
+        "weight_default": 50,
     },
     {
         "id": "min_sleepover_per_week_for_seniors",

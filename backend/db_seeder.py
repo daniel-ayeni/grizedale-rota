@@ -362,6 +362,12 @@ async def seed_if_empty(db) -> dict:
             "theme_default": "modern",
             "public_holidays": UK_2026_HOLIDAYS,
             "rota_start_date_default": "2026-04-20",
+            # Day / night cover counts — drive the solver's cover
+            # constraint. Defaults keep the 2D/2N behaviour; manager
+            # can bump to 3 via /settings → Cover counts.
+            "day_cover_count": 2,
+            "night_cover_count": 2,
+            "cover_overrides": [],
             "senior_weekend_rotation": [
                 {"week_index": 1, "staff_initials": "L.M."},
                 {"week_index": 2, "staff_initials": "L.D."},
@@ -398,6 +404,20 @@ async def seed_if_empty(db) -> dict:
             await db.settings.update_one(
                 {}, {"$set": {"theme_default": "modern", "updated_at": _now_iso()}},
             )
+        # MIGRATION: backfill day_cover_count / night_cover_count on the
+        # existing settings doc so already-deployed homes get the new
+        # configurable cover rule without having to re-seed.
+        if existing and existing.get("day_cover_count") is None:
+            await db.settings.update_one(
+                {}, {"$set": {
+                    "day_cover_count": 2,
+                    "night_cover_count": 2,
+                    "cover_overrides": existing.get("cover_overrides") or [],
+                    "updated_at": _now_iso(),
+                }},
+            )
+            logger.info("Migration: added day/night cover count to settings")
+            summary["migration_cover_count"] = 1
             logger.info("Migration: theme_default paper → modern")
             summary["migration_theme_default_modern"] = 1
 

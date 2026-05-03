@@ -2,3 +2,23 @@
 .App {
     min-height: 100vh;
 }
+
+/* Compact staff table rows — tightens row height to ~40px.
+   Switches inside `.staff-row-compact` use the smaller h-5/w-9 sizing;
+   shadcn's default h-6 Switch would make rows 60-80px tall. */
+.staff-row-compact [role="switch"] {
+    height: 1.1rem;      /* 17.6px */
+    width: 2rem;         /* 32px  */
+}
+.staff-row-compact [role="switch"] > span {
+    height: 0.85rem;
+    width: 0.85rem;
+}
+.staff-row-compact [role="switch"][data-state="checked"] > span {
+    transform: translateX(0.85rem);
+}
+.staff-row-compact td {
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+

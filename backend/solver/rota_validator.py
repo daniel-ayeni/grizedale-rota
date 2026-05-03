@@ -34,6 +34,24 @@ DAY_COVER_SHIFTS = {"D", "D*"}
 NIGHT_COVER_SHIFTS = {"N", "D*", "*"}
 SHIFT_HOURS = {"D": 12, "D*": 14, "N": 12, "*": 0, "OFF": 0, "AL": 0, "TRN": 0, "": 0}
 DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _dow_idx_for(date_str: str) -> int:
+    """Monday=0 … Sunday=6 for an ISO date string."""
+    from datetime import date as _date
+    return _date.fromisoformat(date_str).weekday()
+
+
+class _DowLookup:
+    """Tiny dict-like lazy cache so `DOW_IDX.get(date_str)` works."""
+    def get(self, d_str: str, default=None):
+        try:
+            return _dow_idx_for(d_str)
+        except Exception:
+            return default
+
+
+DOW_IDX = _DowLookup()
 DOW_FROM_STR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
@@ -679,6 +697,63 @@ def validate_rota(
                         date_=d_str, staff_initials=focal,
                         affected_cells=[{"date": d_str, "staff_initials": focal}]
                             + [{"date": d_str, "staff_initials": c} for c in avail_companions]))
+
+    # --- avoid_staff_pairs (multi-pair) -------------------------------
+    # New rule: manager-configured list of staff pairs who should not share
+    # day cover. Fires per (pair, date) when both are on D/D*.
+    asp_mode = _mode_for(rules_config, "avoid_staff_pairs", "soft")
+    asp_entry = (rules_config or {}).get("avoid_staff_pairs") or {}
+    asp_params = asp_entry.get("params") if isinstance(asp_entry, dict) else {}
+    asp_params = asp_params or {}
+    if asp_mode != "off":
+        pairs = asp_params.get("pairs") or []
+        for p in pairs:
+            a = p.get("staff_a_initials") or p.get("a")
+            b = p.get("staff_b_initials") or p.get("b")
+            if not (a and b and a != b and a in staff_by and b in staff_by):
+                continue
+            for d_str in day_strs:
+                a_shift = cell[(d_str, a)]["shift"]
+                b_shift = cell[(d_str, b)]["shift"]
+                if a_shift in {"D", "D*"} and b_shift in {"D", "D*"}:
+                    violations.append(_v("avoid_staff_pairs", asp_mode,
+                        f"{a} and {b} both on day cover on {d_str} "
+                        "— manager-configured pair should not share day cover",
+                        date_=d_str,
+                        affected_cells=[
+                            {"date": d_str, "staff_initials": a},
+                            {"date": d_str, "staff_initials": b},
+                        ]))
+
+    # --- weekend_off_per_rota -----------------------------------------
+    # Every staff should have ≥1 full weekend (Sat+Sun) off per rota.
+    wofr_mode = _mode_for(rules_config, "weekend_off_per_rota", "soft")
+    if wofr_mode != "off":
+        # Collect Sat/Sun pairs.
+        pairs_dates: list[tuple[str, str]] = []
+        for i, d_str in enumerate(day_strs[:-1]):
+            if DOW_IDX.get(d_str) == 5 and DOW_IDX.get(day_strs[i + 1]) == 6:
+                pairs_dates.append((d_str, day_strs[i + 1]))
+        if pairs_dates:
+            OFF_TYPES = {"OFF", "AL", "TRN"}
+            for s in staff_inits:
+                # Exempt staff forced AL/TRN every weekend day.
+                all_unavail = all(
+                    cell[(sat, s)]["shift"] in {"AL", "TRN"}
+                    and cell[(sun, s)]["shift"] in {"AL", "TRN"}
+                    for sat, sun in pairs_dates
+                )
+                if all_unavail:
+                    continue
+                has_full_off = any(
+                    cell[(sat, s)]["shift"] in OFF_TYPES
+                    and cell[(sun, s)]["shift"] in OFF_TYPES
+                    for sat, sun in pairs_dates
+                )
+                if not has_full_off:
+                    violations.append(_v("weekend_off_per_rota", wofr_mode,
+                        f"{s} has no full weekend off in the rota",
+                        staff_initials=s))
 
     return violations
 

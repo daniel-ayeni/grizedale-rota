@@ -61,9 +61,33 @@ async def build_solver_payload(db, override_start_date: str | None = None) -> di
     rules_doc = await db.rules_config.find_one({}, {"_id": 0}) or {}
     leave_docs = await db.leave.find({}, {"_id": 0}).to_list(10000) if "leave" in await db.list_collection_names() else []
 
+    # Auto-extend the senior-weekend rotation so every senior-flagged
+    # staff (is_senior OR is_deputy) is eligible on at least one weekend.
+    # If the manager has saved a rotation that already covers every week,
+    # we trust it verbatim. Otherwise we round-robin across ALL eligible
+    # seniors for the rota length — ensuring e.g. a freshly-promoted D.A.
+    # appears in the rotation on the next /generate.
+    weeks = int(settings.get("rota_length_weeks", 4))
+    stored_rotation = settings.get("senior_weekend_rotation") or []
+    stored_by_week = {r.get("week_index"): r.get("staff_initials")
+                      for r in stored_rotation if isinstance(r, dict)}
+    eligible_seniors = [
+        s["initials"] for s in staff_docs
+        if s.get("is_senior") or s.get("is_deputy")
+    ]
+    effective_rotation: list[dict] = []
+    if eligible_seniors:
+        for w in range(1, weeks + 1):
+            assigned = stored_by_week.get(w)
+            # Drop stored assignments that point to staff who are no
+            # longer flagged senior/deputy (e.g. demoted on /staff).
+            if assigned not in eligible_seniors:
+                assigned = eligible_seniors[(w - 1) % len(eligible_seniors)]
+            effective_rotation.append({"week_index": w, "staff_initials": assigned})
+
     return {
         "rota_start_date": override_start_date or settings.get("rota_start_date_default") or datetime.now(timezone.utc).date().isoformat(),
-        "weeks": settings.get("rota_length_weeks", 4),
+        "weeks": weeks,
         "staff": [_extract_staff_for_solver(s) for s in staff_docs],
         "leave": leave_docs,
         "locked_cells": [],
@@ -73,5 +97,10 @@ async def build_solver_payload(db, override_start_date: str | None = None) -> di
         "rule_weights": _rules_to_solver_weights(rules_doc),
         "rule_params": _rules_to_solver_params(rules_doc),
         "shift_hours": settings.get("shift_hours") or {},
-        "senior_weekend_rotation": settings.get("senior_weekend_rotation") or [],
+        "senior_weekend_rotation": effective_rotation,
+        # Day / Night cover counts — live from /settings so the
+        # manager can bump to 3 day or 3 night without touching code.
+        "day_cover_count": int(settings.get("day_cover_count") or 2),
+        "night_cover_count": int(settings.get("night_cover_count") or 2),
+        "cover_overrides": settings.get("cover_overrides") or [],
     }

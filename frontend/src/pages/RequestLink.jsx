@@ -172,17 +172,18 @@ export default function RequestLink() {
     return (
         <div className="min-h-screen login-hero" data-testid="request-link-page">
             <Toaster richColors closeButton />
-            <div className="max-w-2xl mx-auto px-6 py-10">
+            <div className="max-w-xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
                 {/* Header — theme toggle + expiry */}
-                <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
-                        <Calendar className="w-3.5 h-3.5" /> Staff request link
+                <div className="flex items-center justify-between mb-3 gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] sm:text-xs uppercase tracking-wider text-muted-foreground">
+                        <Calendar className="w-3.5 h-3.5" />
+                        <span className="truncate">Staff request</span>
                     </div>
                     <button
                         type="button"
                         onClick={toggle}
                         data-testid="rl-theme-toggle"
-                        className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border focus-ring transition-colors"
+                        className="shrink-0 flex items-center gap-1.5 text-[11px] sm:text-xs px-2.5 py-1 rounded-full border focus-ring transition-colors"
                         style={{
                             borderColor: "hsl(var(--border-strong))",
                             background: "hsl(var(--bg))",
@@ -194,7 +195,7 @@ export default function RequestLink() {
                         <span className="capitalize">{theme}</span>
                     </button>
                 </div>
-                <h1 className="display text-3xl sm:text-4xl font-semibold leading-tight" data-testid="rl-hi">
+                <h1 className="display text-2xl sm:text-4xl font-semibold leading-tight break-words" data-testid="rl-hi">
                     Hi {info.name || info.staff_initials}
                 </h1>
                 <p className="text-sm text-muted-foreground mt-2">
@@ -206,9 +207,9 @@ export default function RequestLink() {
                     <ExpiryBanner expiry={expiry} />
                 )}
 
-                {/* Date picker + add */}
-                <div className="app-card mt-4 p-4 flex flex-col sm:flex-row gap-2" data-testid="rl-add-card">
-                    <div className="flex-1">
+                {/* Date picker + add — single column on mobile */}
+                <div className="app-card mt-4 p-3 sm:p-4 flex flex-col gap-3" data-testid="rl-add-card">
+                    <div className="w-full">
                         <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
                             Pick a date
                         </label>
@@ -219,11 +220,11 @@ export default function RequestLink() {
                             max={window_?.to || "2030-12-31"}
                             onChange={(e) => setNewDate(e.target.value)}
                             data-testid="rl-new-date"
-                            className="focus-ring"
+                            className="focus-ring w-full"
                         />
                     </div>
                     <Button
-                        className="btn-primary sm:self-end"
+                        className="btn-primary w-full"
                         onClick={addRow}
                         data-testid="rl-add-row"
                     >
@@ -235,11 +236,12 @@ export default function RequestLink() {
                     <div className="app-card mt-4 divide-y" style={{ borderColor: "hsl(var(--border))" }} data-testid="rl-rows">
                         {rows.map((r) => (
                             <div key={r.id} className="p-3 space-y-2" data-testid={`rl-row-${r.date}`}>
-                                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                                    <div className="sm:w-32 flex items-center gap-1 text-sm font-semibold tabular-nums">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <div className="flex items-center gap-1 text-sm font-semibold tabular-nums">
                                         <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
                                         {r.date}
                                     </div>
+                                    <div className="flex-1 min-w-[160px]">
                                     <Select
                                         value={r.pref}
                                         onValueChange={(v) => {
@@ -247,19 +249,21 @@ export default function RequestLink() {
                                             checkSlot(r.id, r.date, v);
                                         }}
                                     >
-                                        <SelectTrigger className="sm:w-48" data-testid={`rl-pref-${r.date}`}>
+                                        <SelectTrigger className="w-full" data-testid={`rl-pref-${r.date}`}>
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
                                             {PREFS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
+                                    </div>
                                     <Button
                                         size="icon"
                                         variant="ghost"
                                         onClick={() => deleteRow(r.id)}
                                         title="Remove"
                                         data-testid={`rl-delete-${r.date}`}
+                                        className="shrink-0"
                                     >
                                         <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
                                     </Button>
@@ -267,11 +271,11 @@ export default function RequestLink() {
                                 {/* Slot-availability hint */}
                                 <SlotBanner row={r} />
                                 <Textarea
-                                    rows={1}
+                                    rows={2}
                                     value={r.notes}
                                     onChange={(e) => setRow(r.id, { notes: e.target.value })}
                                     placeholder="Optional notes"
-                                    className="w-full"
+                                    className="w-full resize-none text-sm"
                                     data-testid={`rl-notes-${r.date}`}
                                 />
                             </div>
@@ -281,7 +285,7 @@ export default function RequestLink() {
 
                 <div className="mt-6 flex justify-end">
                     <Button
-                        className="btn-primary"
+                        className="btn-primary w-full sm:w-auto"
                         disabled={submitting || rows.length === 0}
                         onClick={submit}
                         data-testid="rl-submit"

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Check, X as XIcon, Pencil, Link as LinkIcon, Copy, Trash2, AlertTriangle } from "lucide-react";
+import { Plus, Check, X as XIcon, Pencil, Link as LinkIcon, Copy, Trash2, AlertTriangle, Eye, Calendar as CalIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,6 +48,7 @@ export default function Requests() {
     const [selected, setSelected] = useState(new Set());
     const [addOpen, setAddOpen] = useState(false);
     const [linksOpen, setLinksOpen] = useState(false);
+    const [inspectReq, setInspectReq] = useState(null);
     // Override dialog state — opened when a manager tries to accept a
     // request (single or bulk) whose slot has a hard-rule clash. The
     // manager must tick "I understand" + give a reason before the accept
@@ -218,29 +219,28 @@ export default function Requests() {
                                 <TableCell><span className="text-xs uppercase">{r.source}</span></TableCell>
                                 <TableCell><Badge variant={STATUS_BADGE[r.status] || "outline"}>{r.status}</Badge></TableCell>
                                 <TableCell data-testid={`req-${r.id}-conflicts`}>
-                                    {r.conflicts ? (
-                                        r.conflicts.slot_open ? (
-                                            <Badge variant="outline" className="text-xs" title="No conflicts — safe to accept">✓ Open</Badge>
-                                        ) : (
-                                            <Badge
-                                                className="text-xs cursor-help"
-                                                style={{ background: "hsl(var(--accent-red) / 0.15)", color: "hsl(var(--accent-red))", border: "1px solid hsl(var(--accent-red) / 0.4)" }}
-                                                title={r.conflicts.reason || "Slot taken"}
-                                            >
-                                                ⚠ {(r.conflicts.existing_leave || []).map((e) => e.staff_initials).join(", ") || "Conflict"}
-                                            </Badge>
-                                        )
-                                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                                    <RequestConflictChips req={r} />
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    {r.status === "pending" ? (
-                                        <div className="flex justify-end gap-1">
-                                            <Button size="sm" variant="ghost" onClick={() => resolveOne(r, "accepted")} data-testid={`req-${r.id}-accept`}><Check className="w-4 h-4 text-green-600" /></Button>
-                                            <Button size="sm" variant="ghost" onClick={() => resolveOne(r, "rejected")} data-testid={`req-${r.id}-reject`}><XIcon className="w-4 h-4 text-destructive" /></Button>
-                                        </div>
-                                    ) : (
-                                        <span className="text-xs text-muted-foreground">{r.resolution_note || ""}</span>
-                                    )}
+                                    <div className="flex justify-end gap-0.5">
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => setInspectReq(r)}
+                                            data-testid={`req-${r.id}-inspect`}
+                                            title="Inspect day context"
+                                        >
+                                            <Eye className="w-4 h-4 text-muted-foreground" />
+                                        </Button>
+                                        {r.status === "pending" ? (
+                                            <>
+                                                <Button size="sm" variant="ghost" onClick={() => resolveOne(r, "accepted")} data-testid={`req-${r.id}-accept`}><Check className="w-4 h-4 text-green-600" /></Button>
+                                                <Button size="sm" variant="ghost" onClick={() => resolveOne(r, "rejected")} data-testid={`req-${r.id}-reject`}><XIcon className="w-4 h-4 text-destructive" /></Button>
+                                            </>
+                                        ) : (
+                                            <span className="text-xs text-muted-foreground">{r.resolution_note || ""}</span>
+                                        )}
+                                    </div>
                                 </TableCell>
                             </TableRow>
                         ))}
@@ -257,6 +257,11 @@ export default function Requests() {
                 ctx={overrideCtx}
                 onOpenChange={(v) => { if (!v) setOverrideCtx(null); }}
                 onConfirm={submitOverride}
+            />
+            {/* Inspect-day panel */}
+            <InspectRequestSheet
+                req={inspectReq}
+                onOpenChange={(v) => { if (!v) setInspectReq(null); }}
             />
         </div>
     );
@@ -535,6 +540,183 @@ function OverrideConflictDialog({ ctx, onOpenChange, onConfirm }) {
                 </DialogFooter>
             </DialogContent>
         </Dialog>
+    );
+}
+
+
+/**
+ * Conflict chips shown inline on the /requests Pending row. Three states:
+ *  - Same-role clash → red "⚠ <initials> (<role>) <type>" chip per clashing staff
+ *  - Different-role leave on same date → amber "ℹ <initials> (<role>) <type>"
+ *  - Slot completely open → green "✓ Open"
+ * The manager sees FULL conflict context before clicking anything.
+ */
+function RequestConflictChips({ req }) {
+    if (!req.conflicts) return <span className="text-xs text-muted-foreground">—</span>;
+    const { slot_open, existing_leave = [], reason } = req.conflicts;
+    const reqRole = req.staff_role;
+    const same = [];
+    const other = [];
+    for (const e of existing_leave) {
+        if (e.staff_initials === req.staff_initials) continue;
+        if (reqRole && e.role && e.role.toLowerCase() === reqRole.toLowerCase()) same.push(e);
+        else other.push(e);
+    }
+    if (slot_open && same.length === 0 && other.length === 0) {
+        return (
+            <Badge variant="outline" className="text-xs" title="No conflicts — safe to accept">
+                ✓ Open
+            </Badge>
+        );
+    }
+    return (
+        <div className="flex flex-wrap gap-1 max-w-[260px]" title={reason || ""}>
+            {same.map((e) => (
+                <Badge
+                    key={`s-${e.staff_initials}`}
+                    className="text-[10px] font-medium"
+                    style={{
+                        background: "hsl(var(--accent-red) / 0.12)",
+                        color: "hsl(var(--accent-red))",
+                        border: "1px solid hsl(var(--accent-red) / 0.4)",
+                    }}
+                >
+                    ⚠ {e.staff_initials}{e.role ? ` (${e.role})` : ""} {e.type}
+                </Badge>
+            ))}
+            {other.map((e) => (
+                <Badge
+                    key={`o-${e.staff_initials}`}
+                    className="text-[10px] font-medium"
+                    style={{
+                        background: "hsl(38 95% 55% / 0.14)",
+                        color: "hsl(38 95% 28%)",
+                        border: "1px solid hsl(38 95% 55% / 0.4)",
+                    }}
+                >
+                    ℹ {e.staff_initials}{e.role ? ` (${e.role})` : ""} {e.type}
+                </Badge>
+            ))}
+            {slot_open && same.length === 0 && other.length > 0 && (
+                <Badge variant="outline" className="text-[10px]" title="No hard rule conflict — info only">
+                    OK to accept
+                </Badge>
+            )}
+        </div>
+    );
+}
+
+/**
+ * InspectRequestSheet — side panel that fetches /api/requests/{id}/inspect
+ * and renders:
+ *   • Request summary (staff, date, pref, notes)
+ *   • All leave on that date (red if same role, amber otherwise)
+ *   • Current rota assignments for that day (if any rota covers it)
+ * Gives the manager a single-pane view to decide Accept / Reject without
+ * clicking away.
+ */
+function InspectRequestSheet({ req, onOpenChange }) {
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(false);
+    useEffect(() => {
+        if (!req?.id) { setData(null); return; }
+        setLoading(true);
+        api.get(`/requests/${req.id}/inspect`)
+            .then((r) => setData(r.data))
+            .catch((e) => toast.error(formatApiError(e)))
+            .finally(() => setLoading(false));
+    }, [req?.id]);
+
+    return (
+        <Sheet open={!!req} onOpenChange={onOpenChange}>
+            <SheetContent className="sm:max-w-lg overflow-y-auto" data-testid="inspect-sheet">
+                <SheetHeader>
+                    <SheetTitle className="flex items-center gap-2">
+                        <Eye className="w-4 h-4" /> Day context
+                    </SheetTitle>
+                    <SheetDescription>
+                        Full rota picture for the day before deciding.
+                    </SheetDescription>
+                </SheetHeader>
+                {loading && <div className="p-4 text-sm text-muted-foreground">Loading…</div>}
+                {data && (
+                    <div className="mt-4 space-y-5 text-sm">
+                        <div className="app-card p-3 space-y-1">
+                            <div className="font-semibold">{data.request.staff_initials}
+                                {data.staff_full_name && <span className="text-muted-foreground"> — {data.staff_full_name}</span>}
+                            </div>
+                            <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                <CalIcon className="w-3 h-3" />
+                                {data.request.date}
+                                {data.staff_role && <Badge variant="outline" className="text-[10px]">{data.staff_role}</Badge>}
+                            </div>
+                            <div className="flex items-center gap-2 text-xs">
+                                <span className="text-muted-foreground">Preference:</span>
+                                <Badge>{data.request.shift_preference}</Badge>
+                            </div>
+                            {data.request.notes && (
+                                <div className="text-xs italic text-muted-foreground mt-1">"{data.request.notes}"</div>
+                            )}
+                        </div>
+
+                        <InspectSection
+                            title={`Leave on ${data.request.date}`}
+                            empty="No one else is on leave / training this day."
+                            rows={data.day_leave}
+                            render={(e, idx) => {
+                                const sameRole = data.staff_role && e.role && e.role.toLowerCase() === data.staff_role.toLowerCase();
+                                return (
+                                    <div key={idx} className="flex items-center justify-between gap-2 text-xs py-1 border-b last:border-0" style={{ borderColor: "hsl(var(--border))" }}>
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-semibold">{e.staff_initials}</span>
+                                            {e.role && <span className="text-muted-foreground">({e.role})</span>}
+                                        </div>
+                                        <Badge
+                                            className="text-[10px]"
+                                            style={sameRole ? {
+                                                background: "hsl(var(--accent-red) / 0.12)",
+                                                color: "hsl(var(--accent-red))",
+                                                border: "1px solid hsl(var(--accent-red) / 0.4)",
+                                            } : { background: "hsl(38 95% 55% / 0.14)", color: "hsl(38 95% 28%)", border: "1px solid hsl(38 95% 55% / 0.4)" }}
+                                        >
+                                            {sameRole ? "⚠ same role" : "ℹ"} {e.type}
+                                        </Badge>
+                                    </div>
+                                );
+                            }}
+                        />
+
+                        <InspectSection
+                            title={data.rota_title ? `Scheduled on "${data.rota_title}"` : "No rota covers this date yet"}
+                            empty="Generate a rota that includes this date to see assignments."
+                            rows={data.day_assignments}
+                            render={(a, idx) => (
+                                <div key={idx} className="flex items-center justify-between gap-2 text-xs py-1 border-b last:border-0" style={{ borderColor: "hsl(var(--border))" }}>
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-semibold">{a.staff_initials}</span>
+                                        {a.role && <span className="text-muted-foreground">({a.role})</span>}
+                                    </div>
+                                    <Badge variant="outline" className="font-mono text-[10px]">{a.shift || "—"}</Badge>
+                                </div>
+                            )}
+                        />
+                    </div>
+                )}
+            </SheetContent>
+        </Sheet>
+    );
+}
+
+function InspectSection({ title, rows, render, empty }) {
+    return (
+        <div>
+            <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">{title}</div>
+            <div className="app-card p-3">
+                {(!rows || rows.length === 0)
+                    ? <div className="text-xs text-muted-foreground italic">{empty}</div>
+                    : rows.map(render)}
+            </div>
+        </div>
     );
 }
 

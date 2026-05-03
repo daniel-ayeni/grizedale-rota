@@ -120,15 +120,18 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
         c.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
     # ── Body rows (one row per staff, starting at row 4) ──────────
+    # Staff identity column — INITIALS ONLY per manager spec. Role and
+    # hours are intentionally omitted to match the PDF and keep the grid
+    # professional.
     for si, s in enumerate(staff):
         row = si + 4
-        ident = ws.cell(row=row, column=1, value=(
-            f"{s.get('role', '')} · {s['initials']} ({s.get('target_weekly_hours', '')}h)"
-        ))
+        ident = ws.cell(row=row, column=1, value=s["initials"])
         ident.fill = ident_fill
-        ident.font = Font(bold=True, size=10)
-        ident.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ident.font = Font(bold=True, size=12)
+        ident.alignment = Alignment(horizontal="center", vertical="center")
         ident.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+        # Taller staff rows for readability when printed.
+        ws.row_dimensions[row].height = 36
         for di, d in enumerate(days):
             col = di + 2
             cell_doc = asg.get((d.isoformat(), s["initials"]), {})
@@ -149,11 +152,36 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
             cell.border = Border(left=THIN, right=right, top=THIN, bottom=THIN)
 
     # ── Column widths + freeze panes ──────────────────────────────
-    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["A"].width = 10   # narrower identity — initials only
     for di in range(len(days)):
         ws.column_dimensions[get_column_letter(di + 2)].width = 4.5
     # Freeze first column + first 3 rows (title + day-letter + date)
     ws.freeze_panes = "B4"
+
+    # ── Page setup — landscape, fit to 1 page wide, print area ────
+    # Manager requested one-click File → Print should frame the full
+    # rota without overflow. Landscape + "fit to 1 wide" achieves this
+    # reliably on both A3 and A4 paper.
+    from openpyxl.worksheet.page import PageMargins
+    try:
+        from openpyxl.worksheet.page import PrintPageSetup  # noqa: F401
+    except Exception:
+        pass
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize = ws.PAPERSIZE_A3          # fits 28 day columns comfortably
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0                       # let it flow vertically
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
+    ws.print_options.horizontalCentered = True
+    # Print area covers the entire grid on sheet 1 (title row through
+    # last staff row, day columns through last day).
+    last_col = get_column_letter(1 + len(days))
+    last_row = 3 + len(staff)
+    ws.print_area = f"A1:{last_col}{last_row}"
+    # Repeat the first 3 rows (title + day-letters + dates) at the top
+    # of every printed page so multi-page prints stay readable.
+    ws.print_title_rows = "1:3"
 
     # ── Sheet 2: Summary ──────────────────────────────────────────
     ws2 = wb.create_sheet("Summary")

@@ -24,8 +24,10 @@ const RULE_DEFS = [
     { key: "no_n_to_d",            name: "No N → D back-to-back",                desc: "Staff cannot work a day shift the morning after a waking night.", immovable: true },
     { key: "no_dstar_to_dstar",    name: "No D* → D* back-to-back",              desc: "Sleepover-day shifts cannot be consecutive.", immovable: true },
     { key: "no_sleepover_before_leave", name: "No sleepover before AL / training", desc: "A D* or * sleeps until ~08:00 the next day, so staff cannot start annual leave or training straight after a sleepover.", immovable: true },
-    { key: "senior_weekend_cover", name: "Senior on every weekend", desc: "Each Saturday and Sunday must have at least one of L.M. (Deputy) or L.D. (Senior Care Support) on a D or D*. Rotation preference set in /settings.", immovable: true },
-    { key: "avoid_pair_seniors", name: "Avoid pairing L.M. and L.D. on the same shift", desc: "Manager prefers to split L.M. and L.D. so each pairs with other staff. Penalty when both are on day cover the same date." },
+    { key: "senior_weekend_cover", name: "Senior on every weekend", desc: "Each Saturday and Sunday must have at least one staff flagged `is_senior` or `is_deputy` on a D or D*. Rotation across all eligible seniors (auto-includes any staff you promote to Senior) is set in /settings.", immovable: true },
+    { key: "avoid_pair_seniors", name: "Avoid pairing first two seniors (legacy)", desc: "DEPRECATED — use `Avoid listed staff pairs` below for multi-pair configurations. Keep this off to prevent double-counting when the new rule is configured." },
+    { key: "avoid_staff_pairs", name: "Avoid listed staff pairs on day cover", desc: "Manager-configured list of staff PAIRS that should not share day cover (D or D*). Add multiple pairs, each with its own weight. Promote / demote / hire staff without touching the pairs.", hasParams: true },
+    { key: "weekend_off_per_rota", name: "Every staff gets ≥1 full weekend off per rota", desc: "Penalty when a staff has NO full (Sat+Sun) weekend OFF / AL / TRN across the rota. Ensures nobody is on shift every single weekend of the 4-week cycle. Staff on AL for the entire rota are exempt." },
     { key: "min_sleepover_per_week_for_seniors", name: "Senior / day staff minimum sleepovers per week", desc: "Listed staff should work ≥ N D* shifts each week (unless on AL/TRN that week). Manager can remove staff from the list or toggle to Hard for strict enforcement.", hasParams: true },
     { key: "max_one_per_role_on_al", name: "Max 1 staff per role on AL same date", desc: "Two staff sharing the same role (e.g. two Flexi or two Night Support) cannot be on annual leave on the same date. Enforced at the leave-creation endpoint. Single-occupant roles unaffected.", immovable: true },
     { key: "senior_monday_cover", name: "Senior on every Monday", desc: "Each Monday should have at least one of the listed staff (default L.M., L.D.) on a working shift. Soft default with strong weight 60 — flip to Hard for strict enforcement.", hasParams: true },
@@ -40,7 +42,7 @@ const RULE_DEFS = [
     { key: "med_competent_required", name: "Medication-competent on every shift", desc: "Every day shift and every night shift includes ≥1 medication-competent staff." },
     { key: "first_aider_required",   name: "First-aider on every shift",          desc: "Every day shift and every night shift includes ≥1 first-aider." },
     { key: "no_male_pair_alone",     name: "Male staff cannot be alone together", desc: "If any male staff is on a shift, at least one female must be on the same shift." },
-    { key: "manager_no_shifts",      name: "Manager (J.C.) does not work shifts", desc: "Admin-only staff are excluded from rota shifts unless explicitly locked." },
+    { key: "manager_no_shifts",      name: "Manager / admin-only staff do not work shifts", desc: "Staff flagged `is_manager` or `is_admin_only` are excluded from rota shifts unless explicitly locked. Promote any staff to Manager on /staff and this rule applies to them automatically." },
     { key: "contracted_hours_min",   name: "Every staff hits contracted hours",   desc: "Total scheduled hours ≥ target − leave/training hours (−2h tolerance)." },
     { key: "sleepover_preference",   name: "Sleepover-capable staff prefer D*",   desc: "When a sleepover-capable staff is on a day shift, prefer D* over D." },
     { key: "preferred_off_days",     name: "Honour staff day-of-week preferences", desc: "Avoid scheduling staff on their preferred-off days." },
@@ -290,7 +292,15 @@ export default function Rules() {
                                             setParam={(k, v) => setParam(rd.key, k, v)}
                                         />
                                     )}
-                                    {rd.key !== "overtime_prefer_flexi" && rd.key !== "min_sleepover_per_week_for_seniors" && rd.key !== "senior_monday_cover" && rd.key !== "avoid_star_then_day" && rd.key !== "avoid_star_for_staff" && rd.key !== "max_sleepover_per_week" && rd.key !== "weekday_weekend_split" && rd.key !== "pair_companion_on_day" && (
+                                    {rd.key === "avoid_staff_pairs" && (
+                                        <AvoidStaffPairsParams
+                                            params={r.params || {}}
+                                            staff={staff}
+                                            defaultWeight={r.weight ?? 40}
+                                            setParam={(k, v) => setParam(rd.key, k, v)}
+                                        />
+                                    )}
+                                    {rd.key !== "overtime_prefer_flexi" && rd.key !== "min_sleepover_per_week_for_seniors" && rd.key !== "senior_monday_cover" && rd.key !== "avoid_star_then_day" && rd.key !== "avoid_star_for_staff" && rd.key !== "max_sleepover_per_week" && rd.key !== "weekday_weekend_split" && rd.key !== "pair_companion_on_day" && rd.key !== "avoid_staff_pairs" && (
                                         <div className="grid grid-cols-2 gap-3" data-testid={`rule-${rd.key}-params`}>
                                             <div>
                                                 <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">Preferred staff initials</label>
@@ -1123,6 +1133,110 @@ function PairCompanionParams({ params, staff, setParam }) {
                 data-testid="rule-pair_companion_on_day-add"
             >
                 + Add companion rule
+            </button>
+        </div>
+    );
+}
+
+
+/**
+ * AvoidStaffPairsParams — editor for `avoid_staff_pairs`. Each row is
+ * {staff_a_initials, staff_b_initials, weight}. Manager adds/removes
+ * pairs with a single click; solver penalises every day the pair shares
+ * day cover. No hardcoded staff — fully driven by /staff and is_senior
+ * role flags.
+ */
+function AvoidStaffPairsParams({ params, staff, setParam, defaultWeight = 40 }) {
+    const pairs = Array.isArray(params?.pairs) ? params.pairs : [];
+    const activeStaff = staff.filter((s) => s.active).sort((a, b) => a.initials.localeCompare(b.initials));
+
+    const setPair = (idx, patch) => {
+        const next = pairs.map((p, i) => (i === idx ? { ...p, ...patch } : p));
+        setParam("pairs", next);
+    };
+    const addPair = () => {
+        // Default new pair to the first two seniors (if at least two
+        // exist) so the UX mirrors the legacy behaviour.
+        const seniors = activeStaff.filter((s) => s.is_senior || s.is_deputy);
+        const defaults = seniors.length >= 2
+            ? { staff_a_initials: seniors[0].initials, staff_b_initials: seniors[1].initials }
+            : { staff_a_initials: activeStaff[0]?.initials || "", staff_b_initials: activeStaff[1]?.initials || "" };
+        setParam("pairs", [...pairs, { ...defaults, weight: defaultWeight }]);
+    };
+    const removePair = (idx) => setParam("pairs", pairs.filter((_, i) => i !== idx));
+
+    return (
+        <div className="space-y-3" data-testid="rule-avoid_staff_pairs-params">
+            {pairs.length === 0 && (
+                <div className="text-xs italic text-muted-foreground">
+                    No pairs configured — rule is a no-op. Click <strong>+ Add pair</strong> below to block a combination.
+                </div>
+            )}
+            {pairs.map((p, idx) => (
+                <div key={idx} className="flex flex-wrap items-end gap-2" data-testid={`rule-avoid_staff_pairs-pair-${idx}`}>
+                    <div className="flex-1 min-w-[140px]">
+                        <label className="text-[10px] uppercase tracking-wider text-muted-foreground block mb-1">Staff A</label>
+                        <select
+                            className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                            style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                            value={p.staff_a_initials || ""}
+                            onChange={(e) => setPair(idx, { staff_a_initials: e.target.value })}
+                            data-testid={`rule-avoid_staff_pairs-a-${idx}`}
+                        >
+                            <option value="">—</option>
+                            {activeStaff.map((s) => (
+                                <option key={s.initials} value={s.initials}>{s.initials} — {s.full_name || s.role}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="flex-1 min-w-[140px]">
+                        <label className="text-[10px] uppercase tracking-wider text-muted-foreground block mb-1">Staff B</label>
+                        <select
+                            className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                            style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                            value={p.staff_b_initials || ""}
+                            onChange={(e) => setPair(idx, { staff_b_initials: e.target.value })}
+                            data-testid={`rule-avoid_staff_pairs-b-${idx}`}
+                        >
+                            <option value="">—</option>
+                            {activeStaff.map((s) => (
+                                <option key={s.initials} value={s.initials}>{s.initials} — {s.full_name || s.role}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="w-24">
+                        <label className="text-[10px] uppercase tracking-wider text-muted-foreground block mb-1">Weight</label>
+                        <input
+                            type="number"
+                            min={1}
+                            max={1000}
+                            className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                            style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                            value={p.weight ?? defaultWeight}
+                            onChange={(e) => setPair(idx, { weight: parseInt(e.target.value, 10) || defaultWeight })}
+                            data-testid={`rule-avoid_staff_pairs-w-${idx}`}
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => removePair(idx)}
+                        className="h-9 px-2 text-xs rounded border hover:border-destructive hover:text-destructive transition-colors"
+                        style={{ borderColor: "hsl(var(--border-strong))" }}
+                        data-testid={`rule-avoid_staff_pairs-remove-${idx}`}
+                        title="Remove pair"
+                    >
+                        ×
+                    </button>
+                </div>
+            ))}
+            <button
+                type="button"
+                onClick={addPair}
+                className="text-xs px-3 py-1.5 rounded border"
+                style={{ borderColor: "hsl(var(--border-strong))" }}
+                data-testid="rule-avoid_staff_pairs-add"
+            >
+                + Add pair
             </button>
         </div>
     );

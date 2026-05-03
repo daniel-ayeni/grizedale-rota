@@ -86,6 +86,8 @@ DEFAULT_WEIGHTS = {
     "fair_star_distribution": 30,               # penalty per unit of (max − min) `*` count across eligibles
     "weekday_weekend_split": 40,                # penalty per unit of |actual - target| weekday or weekend count
     "pair_companion_on_day": 200,               # penalty per (focal works alone) day
+    "avoid_staff_pairs": 40,                    # penalty per day listed pair of staff both on day cover
+    "weekend_off_per_rota": 50,                 # penalty per staff with 0 full-weekends-off
 }
 
 DEFAULT_RULE_MODES = {
@@ -113,6 +115,8 @@ DEFAULT_RULE_MODES = {
     "fair_star_distribution": "soft",
     "weekday_weekend_split": "soft",
     "pair_companion_on_day": "soft",
+    "avoid_staff_pairs": "soft",
+    "weekend_off_per_rota": "soft",
 }
 
 # ---------------------------------------------------------------------------
@@ -291,18 +295,41 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                 for t in WORKING_SHIFTS:
                     model.Add(x[s][di][t] == 0)
 
-    # Daily cover constraints
+    # Daily cover constraints — count is configurable via settings
+    # (`day_cover_count` / `night_cover_count`) and per-date via
+    # `cover_overrides: [{date, day_count, night_count}]`. Defaults
+    # preserve the long-running 2D/2N behaviour.
+    global_day_count = int(payload.get("day_cover_count") or 2)
+    global_night_count = int(payload.get("night_cover_count") or 2)
+    cover_overrides_raw = payload.get("cover_overrides") or []
+    cover_override_by_date: dict[str, dict] = {}
+    for ov in cover_overrides_raw:
+        d = ov.get("date")
+        if d:
+            cover_override_by_date[d] = ov
+
     for di in range(n_days):
+        d_str = days[di].isoformat()
+        ov = cover_override_by_date.get(d_str) or {}
+        day_count = int(ov.get("day_count", global_day_count))
+        night_count = int(ov.get("night_count", global_night_count))
+        # Defensive clamp — solver needs at least 1 of each.
+        day_count = max(1, day_count)
+        night_count = max(1, night_count)
+
         cD = sum(x[s][di]["D"] for s in staff_inits)
         cDs = sum(x[s][di]["D*"] for s in staff_inits)
         cN = sum(x[s][di]["N"] for s in staff_inits)
         cStar = sum(x[s][di]["*"] for s in staff_inits)
 
-        # Day cover: 2D OR 1D + 1D* (always hard)
-        model.Add(cD + cDs == 2)
+        # Day cover: exactly `day_count` staff on D / D*; D* limited to 1
+        # (only one sleepover-day counts against day cover).
+        model.Add(cD + cDs == day_count)
         model.Add(cDs <= 1)
-        # Night cover: D*+N OR *+N (always hard)
-        model.Add(cN == 1)
+        # Night cover: sum of (waking N) + (D* or * sleepover) == night_count.
+        # We keep exactly one sleepover (D* or *) — the "waking" remainder
+        # is night_count - 1 N shifts.
+        model.Add(cN == night_count - 1)
         model.Add(cDs + cStar == 1)
 
     # Per-shift med-competent + first-aider
@@ -672,14 +699,42 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                     )
 
     # -----------------------------------------------------------------
-    # avoid_pair_seniors: penalty when BOTH L.M. and L.D. are on day cover
-    # (D or D*) on the same date. Manager prefers each senior to pair with
-    # other staff.
+    # avoid_pair_seniors (legacy) + avoid_staff_pairs (new).
+    # Both rules penalise listed staff pairs from sharing day cover
+    # (D or D*) on the same date. avoid_staff_pairs is the modern
+    # multi-pair configurable version; avoid_pair_seniors is kept for
+    # back-compat when no pairs are configured — it auto-pairs the
+    # first two flagged seniors.
     # -----------------------------------------------------------------
-    aps_mode = modes.get("avoid_pair_seniors", "soft")
-    # De-hardcoded — operate on the first two flagged seniors (commonly
-    # the deputy + senior care support pair).
-    if aps_mode != "off" and len(present_seniors) >= 2:
+    asp_mode = modes.get("avoid_staff_pairs", "soft")
+    asp_params = rule_params.get("avoid_staff_pairs") or {}
+    asp_pairs_cfg = asp_params.get("pairs") or []
+    asp_pairs: list[tuple[str, str, int]] = []
+    for p in asp_pairs_cfg:
+        a = p.get("staff_a_initials") or p.get("a")
+        b = p.get("staff_b_initials") or p.get("b")
+        w = int(p.get("weight") or weights["avoid_staff_pairs"])
+        if a and b and a != b and a in staff_by and b in staff_by:
+            asp_pairs.append((a, b, w))
+
+    if asp_mode != "off" and asp_pairs:
+        for a, b, w in asp_pairs:
+            for di in range(n_days):
+                a_day = x[a][di]["D"] + x[a][di]["D*"]
+                b_day = x[b][di]["D"] + x[b][di]["D*"]
+                both = model.NewBoolVar(f"asp_{a}_{b}_{di}")
+                model.Add(a_day + b_day >= 2).OnlyEnforceIf(both)
+                model.Add(a_day + b_day <= 1).OnlyEnforceIf(both.Not())
+                if asp_mode == "hard":
+                    model.Add(both == 0)
+                else:
+                    soft_terms.append(w * both)
+
+    # Legacy avoid_pair_seniors — only activates if avoid_staff_pairs is
+    # off / empty so the two rules don't double-count. Operates on the
+    # first two flagged seniors (the deputy + senior care support pair).
+    aps_mode = modes.get("avoid_pair_seniors", "off")
+    if aps_mode != "off" and not asp_pairs and len(present_seniors) >= 2:
         a, b = present_seniors[0], present_seniors[1]
         for di in range(n_days):
             a_day = x[a][di]["D"] + x[a][di]["D*"]
@@ -1030,6 +1085,62 @@ def solve_rota(payload: dict[str, Any], time_limit_s: int = 10) -> dict[str, Any
                     model.Add(comp_present == 0).OnlyEnforceIf(miss)
                     model.Add(focal_works + comp_present >= 1).OnlyEnforceIf(miss.Not())
                     soft_terms.append(weights["pair_companion_on_day"] * miss)
+
+    # -----------------------------------------------------------------
+    # weekend_off_per_rota: every staff should have at least ONE weekend
+    # (Sat+Sun both OFF/AL/TRN) in the rota. Penalty fires when a staff
+    # has ZERO full weekends off across the 4-week window.
+    # Staff forced AL/TRN on EVERY weekend day (e.g. whole rota AL) are
+    # exempt — they've effectively got the whole rota off.
+    # -----------------------------------------------------------------
+    wofr_mode = modes.get("weekend_off_per_rota", "soft")
+    if wofr_mode != "off":
+        # Build weekend-pair indices [(sat_di, sun_di), ...] for each
+        # complete Sat/Sun pair in the rota.
+        weekend_pairs: list[tuple[int, int]] = []
+        for di in range(n_days - 1):
+            if days[di].weekday() == 5 and days[di + 1].weekday() == 6:
+                weekend_pairs.append((di, di + 1))
+
+        if weekend_pairs:
+            # Non-working shifts count toward "off": OFF + AL + TRN.
+            OFF_TYPES = ("OFF", "AL", "TRN")
+            for s in staff_inits:
+                # Exemption: staff forced unavailable on EVERY weekend day
+                # (entire-rota AL etc.) skip the rule.
+                all_weekends_forced = all(
+                    _is_forced_unavail(s, sat_di)
+                    and _is_forced_unavail(s, sun_di)
+                    for sat_di, sun_di in weekend_pairs
+                )
+                if all_weekends_forced:
+                    continue
+
+                # For each weekend, indicator = both Sat AND Sun are off.
+                weekend_off_flags: list[cp_model.IntVar] = []
+                for w_idx, (sat_di, sun_di) in enumerate(weekend_pairs):
+                    sat_off = sum(x[s][sat_di][t] for t in OFF_TYPES)
+                    sun_off = sum(x[s][sun_di][t] for t in OFF_TYPES)
+                    w_off = model.NewBoolVar(f"wofr_{s}_{w_idx}_off")
+                    # w_off == 1 iff sat_off == 1 AND sun_off == 1.
+                    model.Add(sat_off + sun_off >= 2).OnlyEnforceIf(w_off)
+                    model.Add(sat_off + sun_off <= 1).OnlyEnforceIf(w_off.Not())
+                    weekend_off_flags.append(w_off)
+
+                # any_off = 1 iff SUM(w_off) >= 1
+                any_off = model.NewBoolVar(f"wofr_{s}_any")
+                total_off = sum(weekend_off_flags)
+                model.Add(total_off >= 1).OnlyEnforceIf(any_off)
+                model.Add(total_off == 0).OnlyEnforceIf(any_off.Not())
+
+                if wofr_mode == "hard":
+                    model.Add(any_off == 1)
+                else:
+                    # Penalty when the staff has ZERO weekends off.
+                    miss = model.NewBoolVar(f"wofr_{s}_miss")
+                    model.Add(any_off == 0).OnlyEnforceIf(miss)
+                    model.Add(any_off == 1).OnlyEnforceIf(miss.Not())
+                    soft_terms.append(weights["weekend_off_per_rota"] * miss)
 
     if soft_terms:
         model.Minimize(sum(soft_terms))

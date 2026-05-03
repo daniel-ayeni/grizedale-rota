@@ -14,19 +14,28 @@ import api, { formatApiError } from "@/lib/api";
 import { useTheme } from "@/contexts/ThemeContext";
 
 const SHIFT_KEYS = ["D", "D*", "N", "*", "OFF", "AL", "TRN"];
-const SENIOR_CHOICES = ["L.M.", "L.D."];
 
 export default function Settings() {
     const [settings, setSettings] = useState(null);
+    const [staff, setStaff] = useState([]);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
     const { theme, setTheme } = useTheme();
 
     useEffect(() => {
-        api.get("/settings").then((r) => setSettings(r.data)).catch((e) => toast.error(formatApiError(e)));
+        Promise.all([api.get("/settings"), api.get("/staff")])
+            .then(([sr, st]) => { setSettings(sr.data); setStaff(st.data); })
+            .catch((e) => toast.error(formatApiError(e)));
     }, []);
 
     if (!settings) return <div className="text-sm text-muted-foreground" data-testid="settings-loading">Loading…</div>;
+
+    // Dynamic senior choices — any staff flagged `is_senior` or `is_deputy`
+    // on /staff becomes available in the weekend rotation dropdown.
+    const seniorChoices = staff
+        .filter((s) => s.active && (s.is_senior || s.is_deputy))
+        .map((s) => s.initials)
+        .sort();
 
     const update = (k, v) => { setSettings((s) => ({ ...s, [k]: v })); setDirty(true); };
     const updateShiftHours = (k, v) => {
@@ -126,15 +135,16 @@ export default function Settings() {
                 <div className="text-sm text-muted-foreground mb-4 flex items-start gap-2">
                     <UsersIcon className="w-4 h-4 mt-0.5 shrink-0" />
                     <span>
-                        Pick which senior (L.M. or L.D.) covers Sat &amp; Sun of each week.
-                        If the assigned senior is on AL/TRN that weekend, the other senior
-                        automatically fills in (at least one must be on D or D* every Sat &amp; Sun).
+                        Pick which senior covers Sat &amp; Sun of each week. The dropdown lists every
+                        staff tagged <strong>SEN</strong> or <strong>DEP</strong> on /staff — promote someone to Senior and
+                        they appear here automatically. If the assigned senior is on AL / TRN that weekend, the solver
+                        automatically falls back to any other eligible senior.
                     </span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {[1, 2, 3, 4].map((wi) => {
                         const entry = (settings.senior_weekend_rotation || []).find((r) => r.week_index === wi)
-                            || { week_index: wi, staff_initials: wi % 2 === 1 ? "L.M." : "L.D." };
+                            || { week_index: wi, staff_initials: seniorChoices[(wi - 1) % Math.max(1, seniorChoices.length)] || "" };
                         const setRotationStaff = (newStaff) => {
                             const cur = (settings.senior_weekend_rotation || []).slice();
                             const idx = cur.findIndex((r) => r.week_index === wi);
@@ -153,7 +163,10 @@ export default function Settings() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {SENIOR_CHOICES.map((s) => (
+                                        {seniorChoices.length === 0 && (
+                                            <SelectItem value="none" disabled>No senior-flagged staff — tag staff with SEN or DEP on /staff</SelectItem>
+                                        )}
+                                        {seniorChoices.map((s) => (
                                             <SelectItem key={s} value={s}>{s}</SelectItem>
                                         ))}
                                     </SelectContent>
@@ -162,6 +175,38 @@ export default function Settings() {
                         );
                     })}
                 </div>
+            </div>
+
+            <div className="section-header" data-testid="settings-section-cover">Cover counts</div>
+            <div className="app-card p-5 space-y-4" data-testid="settings-cover-card">
+                <div className="text-sm text-muted-foreground">
+                    How many staff must be on cover each day and each night. Default 2 / 2. Bump to 3
+                    if you need a third staff for heavier days. Per-date overrides below take precedence.
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Field label="Day cover count (staff on D / D*)">
+                        <Input
+                            type="number" min={1} max={5}
+                            value={settings.day_cover_count ?? 2}
+                            onChange={(e) => update("day_cover_count", Math.max(1, parseInt(e.target.value, 10) || 1))}
+                            data-testid="settings-day-cover-count"
+                        />
+                    </Field>
+                    <Field label="Night cover count (waking N + sleepover)">
+                        <Input
+                            type="number" min={1} max={5}
+                            value={settings.night_cover_count ?? 2}
+                            onChange={(e) => update("night_cover_count", Math.max(1, parseInt(e.target.value, 10) || 1))}
+                            data-testid="settings-night-cover-count"
+                        />
+                    </Field>
+                </div>
+                <CoverOverridesEditor
+                    overrides={settings.cover_overrides || []}
+                    defaultDay={settings.day_cover_count ?? 2}
+                    defaultNight={settings.night_cover_count ?? 2}
+                    onChange={(next) => update("cover_overrides", next)}
+                />
             </div>
 
             <div className="section-header" data-testid="settings-section-theme">Theme</div>
@@ -215,3 +260,64 @@ function ThemeButton({ active, onClick, icon: Icon, label, desc, testid }) {
         </button>
     );
 }
+
+/**
+ * CoverOverridesEditor — per-date exceptions to the global day/night
+ * cover counts. Useful for a heavy day (e.g. service-user admission
+ * assessment) where the manager wants 3 day staff instead of 2.
+ * Empty list → global counts apply everywhere.
+ */
+function CoverOverridesEditor({ overrides, defaultDay, defaultNight, onChange }) {
+    const addRow = () => onChange([...(overrides || []), { date: "", day_count: defaultDay, night_count: defaultNight }]);
+    const setRow = (idx, patch) => {
+        const next = overrides.map((o, i) => (i === idx ? { ...o, ...patch } : o));
+        onChange(next);
+    };
+    const removeRow = (idx) => onChange(overrides.filter((_, i) => i !== idx));
+    return (
+        <div className="pt-2" data-testid="settings-cover-overrides">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">Per-date overrides</div>
+            {(overrides || []).length === 0 && (
+                <div className="text-xs italic text-muted-foreground mb-2">No overrides — global counts apply every day.</div>
+            )}
+            {(overrides || []).map((ov, idx) => (
+                <div key={idx} className="flex flex-wrap items-end gap-2 mb-2" data-testid={`cover-override-${idx}`}>
+                    <Field label="Date">
+                        <Input
+                            type="date"
+                            value={ov.date || ""}
+                            onChange={(e) => setRow(idx, { date: e.target.value })}
+                            className="w-40"
+                            data-testid={`cover-override-${idx}-date`}
+                        />
+                    </Field>
+                    <Field label="Day">
+                        <Input
+                            type="number" min={1} max={5}
+                            value={ov.day_count ?? defaultDay}
+                            onChange={(e) => setRow(idx, { day_count: parseInt(e.target.value, 10) || 1 })}
+                            className="w-20"
+                            data-testid={`cover-override-${idx}-day`}
+                        />
+                    </Field>
+                    <Field label="Night">
+                        <Input
+                            type="number" min={1} max={5}
+                            value={ov.night_count ?? defaultNight}
+                            onChange={(e) => setRow(idx, { night_count: parseInt(e.target.value, 10) || 1 })}
+                            className="w-20"
+                            data-testid={`cover-override-${idx}-night`}
+                        />
+                    </Field>
+                    <Button variant="ghost" size="sm" onClick={() => removeRow(idx)} data-testid={`cover-override-${idx}-remove`}>
+                        Remove
+                    </Button>
+                </div>
+            ))}
+            <Button variant="outline" size="sm" onClick={addRow} data-testid="cover-override-add">
+                + Add override date
+            </Button>
+        </div>
+    );
+}
+
