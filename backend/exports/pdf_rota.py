@@ -172,13 +172,18 @@ def render_rota_pdf(
 
     table_data = [row_week, row_dow, row_date, *body_rows]
 
-    # Column widths: identity column wider, day columns equal share.
-    page_w, page_h = landscape(A3)
-    margin = 12 * mm
-    avail_w = page_w - 2 * margin
+    # Column widths — sized to GUARANTEE the full 28-day grid fits a
+    # single A3 landscape page. We deliberately leave 30pt headroom on
+    # the right so ReportLab never auto-splits the table column-wise
+    # under any rounding edge case (the user's previous regression
+    # cut at day 20 because the table width just exceeded the page).
+    page_w, page_h = landscape(A3)        # 1190 × 842 pt
+    margin = 10 * mm                       # tighter than the 12mm default
+    avail_w = page_w - 2 * margin          # ≈ 1133 pt
     avail_h = page_h - 2 * margin
-    ident_w = 60                 # narrower — initials only
-    day_w = (avail_w - ident_w) / len(days)
+    SAFETY_GUTTER = 30                     # right-edge breathing room
+    ident_w = 50                           # narrower initials column
+    day_w = (avail_w - ident_w - SAFETY_GUTTER) / len(days)
     col_widths = [ident_w] + [day_w] * len(days)
 
     # Row heights — SIZE THE TABLE TO FILL THE PAGE. The previous fixed
@@ -195,7 +200,12 @@ def render_rota_pdf(
     staff_row_h = max(28, min(62, int(avail_table_h / max(1, len(staff)))))
     row_heights = [header_h, header_h, header_h] + [staff_row_h] * len(staff)
 
-    table = Table(table_data, colWidths=col_widths, rowHeights=row_heights, repeatRows=3)
+    # `splitByRow=1, splitInRow=0` tell ReportLab: only ever split
+    # vertically (between staff rows) and NEVER split inside a row /
+    # mid-column. With our col-width math the table fits A3 landscape
+    # in one page; this flag is the belt-and-braces guarantee against
+    # any future width regression cropping the rota at week 3.
+    table = Table(table_data, colWidths=col_widths, rowHeights=row_heights, repeatRows=3, splitByRow=1)
 
     style = TableStyle([
         # Outer border + grid lines
