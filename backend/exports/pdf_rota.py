@@ -173,15 +173,27 @@ def render_rota_pdf(
     table_data = [row_week, row_dow, row_date, *body_rows]
 
     # Column widths: identity column wider, day columns equal share.
-    page_w, _page_h = landscape(A3)
+    page_w, page_h = landscape(A3)
     margin = 12 * mm
     avail_w = page_w - 2 * margin
+    avail_h = page_h - 2 * margin
     ident_w = 60                 # narrower — initials only
     day_w = (avail_w - ident_w) / len(days)
     col_widths = [ident_w] + [day_w] * len(days)
 
-    # Row heights — keep grid compact so the whole rota fits on one page.
-    row_heights = [12, 12, 12] + [22] * len(staff)
+    # Row heights — SIZE THE TABLE TO FILL THE PAGE. The previous fixed
+    # 22pt staff rows left the table at ~25% of the A3 landscape height
+    # with huge white space (user called it "shrunken"). Instead budget
+    # page height → header rows + title/legend/footer → split the rest
+    # evenly across the staff rows. Yields ~50-60pt per staff row on
+    # a typical 8-staff 4-week rota which prints at a comfortable size.
+    header_h = 16                 # rows 1-3 combined → 3 × ~16pt
+    # Reserve vertical space for title (~24pt), spacers (~14pt),
+    # legend (~20pt), footer (~14pt) that flow before/after the table.
+    CHROME_H = 24 + 14 + 20 + 14
+    avail_table_h = max(avail_h - CHROME_H - (3 * header_h), 240)
+    staff_row_h = max(28, min(62, int(avail_table_h / max(1, len(staff)))))
+    row_heights = [header_h, header_h, header_h] + [staff_row_h] * len(staff)
 
     table = Table(table_data, colWidths=col_widths, rowHeights=row_heights, repeatRows=3)
 
@@ -192,28 +204,28 @@ def render_rota_pdf(
         # Header row 1 (week bands)
         ("BACKGROUND", (0, 0), (-1, 0), pal["peach_dark"]),
         ("TEXTCOLOR",  (0, 0), (-1, 0), colors.HexColor("#1a1a1a")),
-        ("FONT",       (0, 0), (-1, 0), "Helvetica-Bold", 8),
+        ("FONT",       (0, 0), (-1, 0), "Helvetica-Bold", 9),
         ("ALIGN",      (0, 0), (-1, 0), "CENTER"),
         ("VALIGN",     (0, 0), (-1, 0), "MIDDLE"),
         # Header row 2 (day letters)
         ("BACKGROUND", (0, 1), (-1, 1), pal["peach"]),
-        ("FONT",       (0, 1), (-1, 1), "Helvetica-Bold", 9),
+        ("FONT",       (0, 1), (-1, 1), "Helvetica-Bold", 10),
         ("ALIGN",      (0, 1), (-1, 1), "CENTER"),
         ("VALIGN",     (0, 1), (-1, 1), "MIDDLE"),
         # Header row 3 (dates)
         ("BACKGROUND", (0, 2), (-1, 2), pal["peach"]),
-        ("FONT",       (0, 2), (-1, 2), "Helvetica", 8),
+        ("FONT",       (0, 2), (-1, 2), "Helvetica", 9),
         ("ALIGN",      (0, 2), (-1, 2), "CENTER"),
         ("VALIGN",     (0, 2), (-1, 2), "MIDDLE"),
         # Identity column styling — initials only, centered + larger font.
         ("BACKGROUND", (0, 3), (0, -1), pal["ident_bg"]),
-        ("FONT",       (0, 3), (0, -1), "Helvetica-Bold", 11),
+        ("FONT",       (0, 3), (0, -1), "Helvetica-Bold", 13),
         ("ALIGN",      (0, 3), (0, -1), "CENTER"),
         ("VALIGN",     (0, 3), (0, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 3), (0, -1), 2),
         ("RIGHTPADDING", (0, 3), (0, -1), 2),
-        # Default cell styling for body
-        ("FONT",  (1, 3), (-1, -1), pal["body_font"], 9),
+        # Default cell styling for body — font sized up to match taller rows.
+        ("FONT",  (1, 3), (-1, -1), pal["body_font"], 11),
         ("ALIGN", (1, 3), (-1, -1), "CENTER"),
         ("VALIGN", (1, 3), (-1, -1), "MIDDLE"),
     ])

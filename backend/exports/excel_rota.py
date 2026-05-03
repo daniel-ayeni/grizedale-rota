@@ -158,26 +158,29 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
     # Freeze first column + first 3 rows (title + day-letter + date)
     ws.freeze_panes = "B4"
 
-    # ── Page setup — landscape, fit to 1 page wide, print area ────
-    # Manager requested one-click File → Print should frame the full
-    # rota without overflow. Landscape + "fit to 1 wide" achieves this
-    # reliably on both A3 and A4 paper.
+    # ── Page setup — landscape A3, fit to EXACTLY 1 page × 1 page ─
+    # The rota is small (29 cols × ~11 rows). On A3 landscape at
+    # natural scale the table only fills ~30% of the page — the user
+    # perceived that as "shrunken content surrounded by empty cells".
+    # Fix: fit-to-1-wide AND fit-to-1-tall so Excel scales UP to fill
+    # the page. print_area is bounded so Excel only prints the actual
+    # table range (A1:AC<last staff row>) — no stray empty cells.
     from openpyxl.worksheet.page import PageMargins
-    try:
-        from openpyxl.worksheet.page import PrintPageSetup  # noqa: F401
-    except Exception:
-        pass
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
-    ws.page_setup.paperSize = ws.PAPERSIZE_A3          # fits 28 day columns comfortably
+    ws.page_setup.paperSize = ws.PAPERSIZE_A3
     ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0                       # let it flow vertically
+    ws.page_setup.fitToHeight = 1                        # fit BOTH dims
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
+    # Slightly tighter margins so more of the page is the rota itself.
+    ws.page_margins = PageMargins(
+        left=0.3, right=0.3, top=0.4, bottom=0.4,
+        header=0.2, footer=0.2,
+    )
     ws.print_options.horizontalCentered = True
-    # Print area covers the entire grid on sheet 1 (title row through
-    # last staff row, day columns through last day).
-    last_col = get_column_letter(1 + len(days))
-    last_row = 3 + len(staff)
+    ws.print_options.verticalCentered = True
+    # Bounded print area — EXACTLY the rota grid, nothing outside.
+    last_col = get_column_letter(1 + len(days))         # 29 → "AC"
+    last_row = 3 + len(staff)                            # 3 headers + N staff
     ws.print_area = f"A1:{last_col}{last_row}"
     # Repeat the first 3 rows (title + day-letters + dates) at the top
     # of every printed page so multi-page prints stay readable.
@@ -223,6 +226,24 @@ def render_rota_xlsx(rota: dict, staff: list[dict], home_name: str = "Grizedale"
     for ci, _ in enumerate(headers):
         ws2.column_dimensions[get_column_letter(ci + 1)].width = 15
     ws2.freeze_panes = "B2"
+
+    # ── Summary sheet print setup (bounded) ───────────────────────
+    # So that File → Print > Entire Workbook gives a clean Summary
+    # sheet too, not empty trailing cells.
+    ws2.page_setup.orientation = ws2.ORIENTATION_LANDSCAPE
+    ws2.page_setup.paperSize = ws2.PAPERSIZE_A4
+    ws2.page_setup.fitToWidth = 1
+    ws2.page_setup.fitToHeight = 1
+    ws2.sheet_properties.pageSetUpPr.fitToPage = True
+    ws2.page_margins = PageMargins(
+        left=0.4, right=0.4, top=0.5, bottom=0.5,
+        header=0.2, footer=0.2,
+    )
+    ws2.print_options.horizontalCentered = True
+    sum_last_col = get_column_letter(len(headers))           # → "L" (12 cols)
+    sum_last_row = 1 + len(staff)                             # header + N rows
+    ws2.print_area = f"A1:{sum_last_col}{sum_last_row}"
+    ws2.print_title_rows = "1:1"
 
     buf = BytesIO()
     wb.save(buf)

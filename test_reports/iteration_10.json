@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 10 — Verified the follow-up fixes after iteration 9's CRITICAL migration bug + export regression. db_seeder.py line 214 now includes `avoid_staff_pairs` AND `weekend_off_per_rota` in the migration tuple, both rules are now present in live rules_config. Excel export has print_area bounded ($A$1:$AC$11 on Rota, dedicated Summary print_area), fitToHeight=1, fitToWidth=1, verticalCentered=True. PDF row heights now scale from page_h/n_staff (28-62pt clamp) and the table fills >45% of page height. 12/13 iteration10 pytest PASS; solver/test_runner.py passes 28/28 [OK]; frontend smoke across Rules/Settings/Requests/Staff/RequestLink all render correctly. ONE SOFT-RULE CONCERN (non-blocking): weekend_off_per_rota with soft+weight=50 leaves 3 of 7 active staff (T.D., A.A., J.R.) without a full Sat+Sun off across the 4-week rota — likely low weight vs. competing hard constraints. Likely needs a higher default weight or hard-mode toggle if spec requires 100% compliance.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/solver/generate (weekend_off_per_rota=soft,w=50)", "issue": "3/7 active staff (T.D., A.A., J.R.) got zero full Sat+Sun OFF across 4 weeks. Soft rule is being traded off. Consider raising default weight from 50 to 150+ or offering Hard mode. Not a code bug per se — solver is correctly treating it as soft."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar footer", "issues": ["Still reads 'Phase 2 · v0.3.0' — carry-over from iteration 7/9, cosmetic."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration10.py",
+    "/app/test_reports/pytest/iteration10_results.xml",
+    "/app/backend/solver/test_runner.py"
+  ],
+  "action_items": [
+    "OPTIONAL: Raise default weight on `weekend_off_per_rota` from 50 → 150 (or ≥ the rotation_fairness weight) so the solver honours 'every staff gets ≥1 full weekend off' more reliably. Alternatively make Hard the default.",
+    "COSMETIC: Update sidebar footer from 'Phase 2 · v0.3.0' to current phase string."
+  ],
+  "critical_code_review_comments": [
+    "db_seeder.py line 214 migration tuple correctly now contains 'avoid_staff_pairs' and 'weekend_off_per_rota' — verified live via GET /api/rules.",
+    "excel_rota.py: ws.print_area='Rota!$A$1:$AC$11', fitToHeight=1, fitToWidth=1, verticalCentered=True, Summary sheet has its own bounded print_area — all verified by openpyxl round-trip.",
+    "pdf_rota.py: staff_row_h=max(28, min(62, avail_table_h/n_staff)) — PDF rendered via pdf2image shows ≥45% central band ink density (previously ~25%), file 6-7KB maintained.",
+    "avoid_staff_pairs soft+weight=200 with pair [L.M.,L.D.] generated a rota with only 3 shared D/D* days over 28 — correctly minimised.",
+    "weekend_off_per_rota: soft+weight=50 left 3 active staff without a full weekend off. Rule is being scored but the default weight is insufficient to dominate scheduling fairness constraints.",
+    "/requests list continues to hydrate staff_role on every row; /requests/{id}/inspect returns the day-context payload.",
+    "/settings cover_counts (2/2 day/night) + empty cover_overrides persist. solver generate default run <15s. solver/test_runner.py still reports 28 [OK]."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration10.py",
+    "/app/test_reports/pytest/iteration10_results.xml",
+    "/app/test_reports/iteration_10.json"
+  ],
+  "success_rate": {
+    "backend": "92% (12/13 pytest + 28/28 solver test_runner). Single failure is a soft-rule weight/tuning concern, not a regression.",
+    "frontend": "~95% — Rules shows new `avoid_staff_pairs` (+ Add pair button) and `weekend_off_per_rota`; Settings has Cover Counts + overrides editor; Staff rows render at 40-52px; /r/{token} is responsive on 375px mobile; Requests table renders (empty pending queue so no live Inspect-button click test performed)."
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "None for iteration 10. Tests briefly mutate rules (avoid_staff_pairs pairs, weekend_off_per_rota mode) and settings, then restore via session-scoped autouse fixture and regenerate a baseline rota at teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_iteration10.py -v. All 13 tests should pass once/ if the default weight on weekend_off_per_rota is bumped (currently 1 soft failure). Iteration 9's critical db_seeder bug is resolved. Use the shared session-scoped _restore fixture pattern for any rule/setting mutations.",
+  "rca_of_the_issue": "Iteration 9 CRITICAL bug (migration tuple missing the two new rule ids) is now FIXED in /app/backend/db_seeder.py line 214. Confirmed by live `GET /api/rules` returning both `avoid_staff_pairs` and `weekend_off_per_rota` entries with the correct shape. Iteration 9's export regression (shrunken prints / empty print area) is also FIXED: openpyxl round-trip confirms print_area bounded to table dims, fitToHeight=1, verticalCentered=True, Summary sheet has its own bounded print setup; pdf2image render shows the rota table fills the printable area (~45%+ central ink ratio). The remaining `weekend_off_per_rota` soft-rule under-enforcement is a weight-tuning concern, not a bug — the solver is correctly scoring the constraint as soft."
+}

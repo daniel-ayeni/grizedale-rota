@@ -211,7 +211,7 @@ async def seed_if_empty(db) -> dict:
     if rules_doc:
         rules = rules_doc.get("rules") or {}
         from solver.rule_definitions import RULES_BY_ID
-        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors", "min_sleepover_per_week_for_seniors", "max_one_per_role_on_al", "senior_monday_cover", "respect_shift_preference", "avoid_star_then_night", "avoid_star_then_day", "avoid_star_for_staff", "max_sleepover_per_week", "fair_star_distribution", "weekday_weekend_split", "pair_companion_on_day"):
+        for rule_id in ("overtime_prefer_flexi", "prefer_dstar_over_star", "non_flexi_overage", "no_sleepover_before_leave", "senior_weekend_cover", "avoid_pair_seniors", "avoid_staff_pairs", "weekend_off_per_rota", "min_sleepover_per_week_for_seniors", "max_one_per_role_on_al", "senior_monday_cover", "respect_shift_preference", "avoid_star_then_night", "avoid_star_then_day", "avoid_star_for_staff", "max_sleepover_per_week", "fair_star_distribution", "weekday_weekend_split", "pair_companion_on_day"):
             if rule_id in rules:
                 continue
             r_def = RULES_BY_ID[rule_id]
