@@ -623,13 +623,33 @@ async def get_rota(rota_id: str, current=Depends(auth_required)):
     return rota
 
 
+def _auto_rota_title(start_date_iso: str, weeks: int) -> str:
+    """Generate a default rota title from its date range.
+
+    Examples (weeks=4):
+        2026-05-18 → "May 2026 – June 2026 ROTA"
+        2026-04-06 → "April 2026 – May 2026 ROTA"
+        2026-04-01 → "April 2026 ROTA"   (start + end same month)
+    """
+    try:
+        start = datetime.strptime(start_date_iso, "%Y-%m-%d").date()
+    except Exception:
+        return f"Rota {start_date_iso}"
+    end = start + timedelta(days=max(0, int(weeks) * 7 - 1))
+    sm = start.strftime("%B %Y")
+    em = end.strftime("%B %Y")
+    return f"{sm} ROTA" if sm == em else f"{sm} – {em} ROTA"
+
+
 @api.post("/rotas")
 async def create_rota(payload: RotaCreate, current=Depends(auth_required)):
     rota = {
         "id": str(uuid.uuid4()),
         "start_date": payload.start_date,
         "weeks": payload.weeks,
-        "title": payload.title or f"Rota {payload.start_date}",
+        # Auto-title when manager left it blank — clearer than the
+        # legacy "Rota 2026-05-18" stub. Manager can override later.
+        "title": payload.title or _auto_rota_title(payload.start_date, payload.weeks),
         "assignments": [],
         "on_call": [],
         "status": "draft",
@@ -1246,6 +1266,53 @@ async def delete_leave(leave_id: str, current=Depends(auth_required)):
     return {"success": True}
 
 
+class LeaveBulkDelete(BaseModel):
+    """Either explicit ids OR a (staff, from-date, to-date) range."""
+    ids: list[str] | None = None
+    staff_initials: str | None = None
+    from_date: str | None = None
+    to_date: str | None = None
+
+
+@api.post("/leave/bulk-delete")
+async def bulk_delete_leave(payload: LeaveBulkDelete, current=Depends(auth_required)):
+    """Delete leave entries in bulk.
+
+    Two supported flows:
+      1. `ids: [...]` — delete those rows verbatim.
+      2. `staff_initials + from_date + to_date` — delete every leave
+         row for that staff in the (inclusive) date window. Useful
+         for unwinding an accidentally-pasted multi-day leave block.
+
+    Either path returns `{deleted: N, ids: [...]}`. Always idempotent
+    — missing ids count as 0 deletions, never raise.
+    """
+    q: dict = {}
+    if payload.ids:
+        q = {"id": {"$in": list(payload.ids)}}
+    elif payload.staff_initials and payload.from_date and payload.to_date:
+        q = {
+            "staff_initials": payload.staff_initials,
+            "date": {"$gte": payload.from_date, "$lte": payload.to_date},
+        }
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either `ids` or all of (staff_initials, from_date, to_date)",
+        )
+    targets = await db.leave.find(q, {"_id": 0}).to_list(10000)
+    if not targets:
+        return {"deleted": 0, "ids": []}
+    res = await db.leave.delete_many(q)
+    logger.info("LEAVE_BULK_DELETE n=%d query=%s by=%s",
+                res.deleted_count, q,
+                (current or {}).get("email", "?"))
+    return {
+        "deleted": res.deleted_count,
+        "ids": [t["id"] for t in targets],
+    }
+
+
 # ============================================================================
 # Requests (Phase 2)
 # ============================================================================
@@ -1500,6 +1567,64 @@ async def bulk_patch_requests(payload: RequestBulkPatch, current=Depends(auth_re
         "updated": updated,
         "leave_created": leave_created,
         "skipped_conflicts": skipped_conflicts,
+    }
+
+
+@api.delete("/requests/{req_id}")
+async def delete_request(req_id: str, current=Depends(auth_required)):
+    target = await db.requests.find_one({"id": req_id}, {"_id": 0})
+    res = await db.requests.delete_one({"id": req_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    logger.info("REQUEST_DELETE id=%s staff=%s date=%s by=%s",
+                req_id,
+                (target or {}).get("staff_initials"),
+                (target or {}).get("date"),
+                (current or {}).get("email", "?"))
+    return {"success": True}
+
+
+class RequestBulkDelete(BaseModel):
+    """Either explicit ids OR an `older_than` cutoff date."""
+    ids: list[str] | None = None
+    older_than: str | None = None  # YYYY-MM-DD — deletes requests with date < this
+    statuses: list[str] | None = None  # filter by status (default: all)
+
+
+@api.post("/requests/bulk-delete")
+async def bulk_delete_requests(payload: RequestBulkDelete, current=Depends(auth_required)):
+    """Bulk-delete past / unwanted requests.
+
+    Two flows:
+      1. `ids: [...]` — delete the listed rows.
+      2. `older_than: YYYY-MM-DD [+ statuses]` — delete every request
+         whose `date` is strictly before the cutoff (and whose status
+         is in `statuses` if provided).
+
+    Returns `{deleted, ids}`. Idempotent.
+    """
+    q: dict = {}
+    if payload.ids:
+        q = {"id": {"$in": list(payload.ids)}}
+    elif payload.older_than:
+        q = {"date": {"$lt": payload.older_than}}
+        if payload.statuses:
+            q["status"] = {"$in": payload.statuses}
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either `ids` or `older_than`",
+        )
+    targets = await db.requests.find(q, {"_id": 0}).to_list(10000)
+    if not targets:
+        return {"deleted": 0, "ids": []}
+    res = await db.requests.delete_many(q)
+    logger.info("REQUEST_BULK_DELETE n=%d query=%s by=%s",
+                res.deleted_count, q,
+                (current or {}).get("email", "?"))
+    return {
+        "deleted": res.deleted_count,
+        "ids": [t["id"] for t in targets],
     }
 
 
@@ -1762,6 +1887,14 @@ async def public_get(token: str):
     }
 
 
+def _week_bounds(date_str: str) -> tuple[str, str]:
+    """Return (mon_iso, sun_iso) for the Mon-Sun week containing date_str."""
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    mon = d - timedelta(days=d.weekday())
+    sun = mon + timedelta(days=6)
+    return mon.isoformat(), sun.isoformat()
+
+
 async def _check_leave_slot(staff_initials: str, date_str: str, preference: str) -> dict:
     """Inspect a candidate (staff, date, preference) for an off-type
     request and return rich slot-availability info.
@@ -1875,6 +2008,61 @@ async def _check_leave_slot(staff_initials: str, date_str: str, preference: str)
             "existing_leave": existing_leave,
             "would_break_rules": ["max_one_per_role_on_al"],
         }
+
+    # ---- max_staff_on_al_per_week ---------------------------------
+    # New rule (Phase 5). Count distinct staff with AL/OFF_REQ/TRN
+    # ANYWHERE in the same Mon-Sun week. If the count would equal-or-
+    # exceed `max_count`, treat as hard_limit. Public submit still
+    # goes through; the manager decides via the override dialog.
+    rules_doc = await db.rules_config.find_one({}, {"_id": 0}) or {}
+    rules_cfg = rules_doc.get("rules", {}) or {}
+    week_rule = rules_cfg.get("max_staff_on_al_per_week") or {}
+    week_mode = week_rule.get("mode", "hard")
+    if week_mode != "off":
+        max_count = int((week_rule.get("params") or {}).get("max_count", 1) or 1)
+        mon, sun = _week_bounds(date_str)
+        # Find all leave rows in that Mon-Sun window. Exclude self so
+        # the requesting staff doesn't count toward the cap.
+        week_leave = await db.leave.find(
+            {
+                "date": {"$gte": mon, "$lte": sun},
+                "type": {"$in": ["AL", "OFF_REQ", "TRN"]},
+                "staff_initials": {"$ne": staff_initials},
+            },
+            {"_id": 0},
+        ).to_list(100)
+        # Distinct staff count (a single staff with 5 days of AL is one).
+        distinct = sorted({e["staff_initials"] for e in week_leave})
+        if len(distinct) >= max_count:
+            names = ", ".join(distinct)
+            # Hydrate role for each clashing staff (already cached).
+            week_existing = []
+            extra_inits = [s for s in distinct if s not in role_by_initials]
+            if extra_inits:
+                async for s in db.staff.find(
+                    {"initials": {"$in": extra_inits}},
+                    {"_id": 0, "initials": 1, "role": 1},
+                ):
+                    role_by_initials[s["initials"]] = s.get("role", "")
+            for e in week_leave:
+                week_existing.append({
+                    "staff_initials": e["staff_initials"],
+                    "role": role_by_initials.get(e["staff_initials"], ""),
+                    "type": e["type"],
+                })
+            return {
+                "slot_status": "hard_limit" if week_mode == "hard" else "role_conflict",
+                "slot_open": False,
+                "reason": (
+                    f"{names} is already on AL during the week of {mon} – {sun}. "
+                    f"Maximum {max_count} staff on AL per week."
+                ),
+                "existing_leave": existing_leave + [
+                    e for e in week_existing
+                    if e["staff_initials"] not in {x["staff_initials"] for x in existing_leave}
+                ],
+                "would_break_rules": ["max_staff_on_al_per_week"],
+            }
 
     return {
         "slot_status": "open",

@@ -38,6 +38,15 @@ export default function Holidays() {
     const [holidays, setHolidays] = useState([]);
     const [staff, setStaff] = useState([]);
     const [modalDate, setModalDate] = useState(null);
+    // Multi-select mode for bulk delete. selectedLeaveIds is a Set of
+    // leave-row ids the manager has ticked across the year/month views.
+    const [selectMode, setSelectMode] = useState(false);
+    const [selectedLeaveIds, setSelectedLeaveIds] = useState(() => new Set());
+    // Per-staff filter — "all" or a specific initials. Filters which
+    // leave rows are shown on the page (and therefore selectable).
+    const [staffFilter, setStaffFilter] = useState("all");
+    // Range-delete dialog state.
+    const [rangeOpen, setRangeOpen] = useState(false);
 
     const load = async () => {
         try {
@@ -49,22 +58,74 @@ export default function Holidays() {
             setLeave(leaveRes.data);
             setHolidays(settingsRes.data?.public_holidays || []);
             setStaff(staffRes.data.filter((s) => s.active));
+            // Reset selection when data reloads (avoids ghost-ids).
+            setSelectedLeaveIds(new Set());
         } catch (e) {
             toast.error(formatApiError(e));
         }
     };
     useEffect(() => { load(); /* eslint-disable-next-line */ }, [year]);
 
+    /** Filter leave rows by the staffFilter dropdown. */
+    const filteredLeave = useMemo(
+        () => staffFilter === "all" ? leave : leave.filter((l) => l.staff_initials === staffFilter),
+        [leave, staffFilter],
+    );
+
     const leaveByDate = useMemo(() => {
         const m = new Map();
-        for (const l of leave) {
+        for (const l of filteredLeave) {
             if (!m.has(l.date)) m.set(l.date, []);
             m.get(l.date).push(l);
         }
         return m;
-    }, [leave]);
+    }, [filteredLeave]);
 
     const holidayDates = useMemo(() => new Set(holidays.map((h) => h.date)), [holidays]);
+
+    const toggleLeaveSel = (leaveId) => {
+        setSelectedLeaveIds((s) => {
+            const n = new Set(s);
+            n.has(leaveId) ? n.delete(leaveId) : n.add(leaveId);
+            return n;
+        });
+    };
+
+    /** Selects every leave id currently on display (after staff filter). */
+    const selectAllDisplayed = () => {
+        setSelectedLeaveIds(new Set(filteredLeave.map((l) => l.id)));
+    };
+
+    /** Bulk-delete the currently selected leave ids. */
+    const deleteSelected = async () => {
+        if (selectedLeaveIds.size === 0) return;
+        if (!window.confirm(`Delete ${selectedLeaveIds.size} leave entr${selectedLeaveIds.size === 1 ? "y" : "ies"}?`)) return;
+        try {
+            const { data } = await api.post("/leave/bulk-delete", { ids: Array.from(selectedLeaveIds) });
+            toast.success(`Deleted ${data?.deleted || 0} leave row${data?.deleted === 1 ? "" : "s"}`);
+            load();
+        } catch (e) { toast.error(formatApiError(e)); }
+    };
+
+    /** Range-delete: delete every leave row for the selected staff in
+     *  the (inclusive) date window. Useful for unwinding an
+     *  accidentally-pasted multi-day leave block. */
+    const submitRangeDelete = async (staffInitials, fromDate, toDate) => {
+        if (!staffInitials || !fromDate || !toDate) return;
+        if (fromDate > toDate) {
+            toast.error("From-date must be before to-date");
+            return;
+        }
+        if (!window.confirm(`Delete every leave row for ${staffInitials} between ${fromDate} and ${toDate}?`)) return;
+        try {
+            const { data } = await api.post("/leave/bulk-delete", {
+                staff_initials: staffInitials, from_date: fromDate, to_date: toDate,
+            });
+            toast.success(`Deleted ${data?.deleted || 0} leave row${data?.deleted === 1 ? "" : "s"}`);
+            setRangeOpen(false);
+            load();
+        } catch (e) { toast.error(formatApiError(e)); }
+    };
 
     return (
         <div className="space-y-6" data-testid="holidays-page">
@@ -159,7 +220,7 @@ export default function Holidays() {
                 </div>
             </div>
 
-            {/* Legend */}
+            {/* Legend + bulk-delete toolbar */}
             <div className="app-card p-3 flex flex-wrap items-center gap-3 text-xs" data-testid="holidays-legend">
                 <Legend label="Annual Leave" color={TYPE_COLOURS.AL} />
                 <Legend label="Training" color={TYPE_COLOURS.TRN} />
@@ -168,19 +229,115 @@ export default function Holidays() {
                     <span className="w-2.5 h-2.5 rounded-full" style={{ background: "hsl(var(--accent-bright-blue))" }} />
                     Public holiday
                 </span>
+
+                <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="holidays-toolbar">
+                    {/* Per-staff filter — narrows year/month views to one staff */}
+                    <Select value={staffFilter} onValueChange={setStaffFilter}>
+                        <SelectTrigger className="w-36 h-8 text-xs" data-testid="holidays-staff-filter">
+                            <SelectValue placeholder="Filter staff…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">All staff</SelectItem>
+                            {staff.map((s) => (
+                                <SelectItem key={s.initials} value={s.initials}>{s.initials} — {s.role}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                    <Button
+                        size="sm"
+                        variant={selectMode ? "default" : "outline"}
+                        onClick={() => {
+                            if (selectMode) setSelectedLeaveIds(new Set());
+                            setSelectMode((v) => !v);
+                        }}
+                        data-testid="holidays-select-toggle"
+                    >
+                        {selectMode ? "Done selecting" : "Select"}
+                    </Button>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setRangeOpen(true)}
+                        data-testid="holidays-range-delete"
+                        title="Delete every leave for a staff in a date range"
+                    >
+                        Range delete
+                    </Button>
+                </div>
             </div>
+
+            {selectMode && (
+                <div className="app-card p-3 flex flex-wrap items-center justify-between gap-3" data-testid="holidays-select-bar">
+                    <div className="text-sm">
+                        <strong>{selectedLeaveIds.size}</strong> selected ·
+                        <span className="text-muted-foreground"> {filteredLeave.length} displayed</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={selectAllDisplayed} data-testid="holidays-select-all-displayed">
+                            Select all displayed
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSelectedLeaveIds(new Set())}
+                            data-testid="holidays-clear-selection"
+                        >
+                            Clear
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={selectedLeaveIds.size === 0}
+                            className="text-destructive border-destructive/40 hover:bg-destructive/10"
+                            onClick={deleteSelected}
+                            data-testid="holidays-bulk-delete"
+                        >
+                            Delete {selectedLeaveIds.size} selected
+                        </Button>
+                    </div>
+                </div>
+            )}
 
             {view === "year" ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="year-grid">
                     {Array.from({ length: 12 }, (_, m) => (
                         <MiniMonth key={m} year={year} month={m} leaveByDate={leaveByDate} holidayDates={holidayDates}
-                            onCellClick={(date) => setModalDate(date)} onTitleClick={() => { setMonthIdx(m); setView("month"); }} />
+                            selectedLeaveIds={selectedLeaveIds}
+                            onCellClick={(date) => {
+                                if (selectMode) {
+                                    const items = leaveByDate.get(date) || [];
+                                    if (items.length === 0) return;
+                                    setSelectedLeaveIds((s) => {
+                                        const n = new Set(s);
+                                        const allSelected = items.every((l) => n.has(l.id));
+                                        items.forEach((l) => allSelected ? n.delete(l.id) : n.add(l.id));
+                                        return n;
+                                    });
+                                } else {
+                                    setModalDate(date);
+                                }
+                            }}
+                            onTitleClick={() => { setMonthIdx(m); setView("month"); }} />
                     ))}
                 </div>
             ) : (
                 <BigMonth year={year} month={monthIdx} setMonth={setMonthIdx}
                     leaveByDate={leaveByDate} holidayDates={holidayDates}
-                    onCellClick={(date) => setModalDate(date)} />
+                    selectedLeaveIds={selectedLeaveIds}
+                    onCellClick={(date) => {
+                        if (selectMode) {
+                            const items = leaveByDate.get(date) || [];
+                            if (items.length === 0) return;
+                            setSelectedLeaveIds((s) => {
+                                const n = new Set(s);
+                                const allSel = items.every((l) => n.has(l.id));
+                                items.forEach((l) => allSel ? n.delete(l.id) : n.add(l.id));
+                                return n;
+                            });
+                        } else {
+                            setModalDate(date);
+                        }
+                    }} />
             )}
 
             <LeaveModal
@@ -191,7 +348,73 @@ export default function Holidays() {
                 existing={modalDate ? (leaveByDate.get(modalDate) || []) : []}
                 onChange={load}
             />
+            <RangeDeleteDialog
+                open={rangeOpen}
+                onOpenChange={setRangeOpen}
+                staff={staff}
+                onSubmit={submitRangeDelete}
+            />
         </div>
+    );
+}
+
+/**
+ * RangeDeleteDialog — quickly remove every leave row for one staff
+ * inside a (from-date, to-date) window. Useful for unwinding an
+ * accidentally-pasted multi-day leave block.
+ */
+function RangeDeleteDialog({ open, onOpenChange, staff, onSubmit }) {
+    const [staffInits, setStaffInits] = useState("");
+    const [from, setFrom] = useState("");
+    const [to, setTo] = useState("");
+    useEffect(() => {
+        if (!open) { setStaffInits(""); setFrom(""); setTo(""); }
+    }, [open]);
+    return (
+        <AlertDialog open={open} onOpenChange={onOpenChange}>
+            <AlertDialogContent data-testid="holidays-range-dialog">
+                <AlertDialogHeader>
+                    <AlertDialogTitle>Range delete leave</AlertDialogTitle>
+                    <AlertDialogDescription>
+                        Delete every leave row for the chosen staff in the (inclusive) date window. This can't be undone.
+                    </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-3 text-sm">
+                    <div>
+                        <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Staff</Label>
+                        <Select value={staffInits} onValueChange={setStaffInits}>
+                            <SelectTrigger data-testid="range-delete-staff"><SelectValue placeholder="Pick staff…" /></SelectTrigger>
+                            <SelectContent>
+                                {staff.map((s) => (
+                                    <SelectItem key={s.initials} value={s.initials}>{s.initials} — {s.role}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">From</Label>
+                            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} data-testid="range-delete-from" />
+                        </div>
+                        <div>
+                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">To</Label>
+                            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} data-testid="range-delete-to" />
+                        </div>
+                    </div>
+                </div>
+                <AlertDialogFooter>
+                    <AlertDialogCancel data-testid="range-delete-cancel">Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                        onClick={() => onSubmit(staffInits, from, to)}
+                        disabled={!staffInits || !from || !to}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        data-testid="range-delete-confirm"
+                    >
+                        Delete
+                    </AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
     );
 }
 
@@ -204,7 +427,7 @@ function Legend({ label, color }) {
     );
 }
 
-function MonthCells({ year, month, leaveByDate, holidayDates, onCellClick, mini = true }) {
+function MonthCells({ year, month, leaveByDate, holidayDates, onCellClick, mini = true, selectedLeaveIds }) {
     const first = new Date(year, month, 1);
     const last = new Date(year, month + 1, 0);
     const dim = last.getDate();
@@ -226,6 +449,8 @@ function MonthCells({ year, month, leaveByDate, holidayDates, onCellClick, mini 
                 const isHol = holidayDates.has(ds);
                 const dt = new Date(year, month, d);
                 const we = dt.getDay() === 0 || dt.getDay() === 6;
+                // Highlight when ANY leave on the cell is currently selected.
+                const someSelected = !!selectedLeaveIds && items.some((l) => selectedLeaveIds.has(l.id));
                 return (
                     <button
                         key={i}
@@ -235,13 +460,18 @@ function MonthCells({ year, month, leaveByDate, holidayDates, onCellClick, mini 
                         className={`relative rounded text-left ${mini ? "p-1 text-[10px]" : "p-1.5 text-xs"}`}
                         style={{
                             background: items.length ? TYPE_COLOURS[items[0].type]?.bg || "transparent" : we ? "hsl(var(--muted))" : "transparent",
-                            border: "1px solid hsl(var(--border))",
+                            border: someSelected
+                                ? "2px solid hsl(var(--accent-red))"
+                                : "1px solid hsl(var(--border))",
                             minHeight: mini ? 36 : 64,
+                            outline: someSelected ? "2px solid hsl(var(--accent-red) / 0.25)" : "none",
+                            outlineOffset: someSelected ? "-4px" : "0",
                         }}
                     >
                         <div className="flex items-center gap-1">
                             <span className="font-semibold tabular-nums">{d}</span>
                             {isHol && <span className="w-1.5 h-1.5 rounded-full" style={{ background: "hsl(var(--accent-bright-blue))" }} />}
+                            {someSelected && <span className="ml-auto text-[8px] uppercase text-destructive font-semibold">SEL</span>}
                         </div>
                         {items.length > 0 && (
                             <div className={`flex flex-wrap gap-0.5 mt-1 ${mini ? "" : "gap-1"}`}>
@@ -269,17 +499,17 @@ function MonthCells({ year, month, leaveByDate, holidayDates, onCellClick, mini 
     );
 }
 
-function MiniMonth({ year, month, leaveByDate, holidayDates, onCellClick, onTitleClick }) {
+function MiniMonth({ year, month, leaveByDate, holidayDates, onCellClick, onTitleClick, selectedLeaveIds }) {
     const monthName = new Date(year, month, 1).toLocaleString(undefined, { month: "long" });
     return (
         <div className="app-card p-3" data-testid={`month-${month}`}>
             <button type="button" onClick={onTitleClick} className="text-sm font-semibold mb-2 link-underline" data-testid={`month-title-${month}`}>{monthName}</button>
-            <MonthCells year={year} month={month} leaveByDate={leaveByDate} holidayDates={holidayDates} onCellClick={onCellClick} mini={true} />
+            <MonthCells year={year} month={month} leaveByDate={leaveByDate} holidayDates={holidayDates} onCellClick={onCellClick} selectedLeaveIds={selectedLeaveIds} mini={true} />
         </div>
     );
 }
 
-function BigMonth({ year, month, setMonth, leaveByDate, holidayDates, onCellClick }) {
+function BigMonth({ year, month, setMonth, leaveByDate, holidayDates, onCellClick, selectedLeaveIds }) {
     const monthName = new Date(year, month, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
     return (
         <div className="app-card p-4" data-testid="big-month">
@@ -288,7 +518,7 @@ function BigMonth({ year, month, setMonth, leaveByDate, holidayDates, onCellClic
                 <div className="display text-xl font-semibold">{monthName}</div>
                 <Button variant="outline" size="icon" onClick={() => setMonth((m) => (m + 1) % 12)} data-testid="big-month-next"><ChevronRight className="w-4 h-4" /></Button>
             </div>
-            <MonthCells year={year} month={month} leaveByDate={leaveByDate} holidayDates={holidayDates} onCellClick={onCellClick} mini={false} />
+            <MonthCells year={year} month={month} leaveByDate={leaveByDate} holidayDates={holidayDates} onCellClick={onCellClick} selectedLeaveIds={selectedLeaveIds} mini={false} />
         </div>
     );
 }

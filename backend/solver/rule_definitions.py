@@ -229,6 +229,17 @@ RULES: list[dict] = [
         },
     },
     {
+        "id": "max_staff_on_al_per_week",
+        "name": "Max N staff on AL in any single week",
+        "description": "For each Mon-Sun week of the rota, no more than N staff may have AL / OFF requests overlapping that week. Default N=1 — one staff on AL per week. Manager can bump to 2 for larger teams. Submit-via-public-link is never blocked; the staff sees a red 'Slot taken' banner and the manager makes the call.",
+        "severity_default": "hard",
+        "immovable": False,
+        "weight_default": 10000,
+        "params_default": {
+            "max_count": 1,
+        },
+    },
+    {
         "id": "max_one_per_role_on_al",
         "name": "Max 1 staff per role on AL same date",
         "description": "Two staff sharing the same role (e.g. two Flexi or two Night Support) cannot be on annual leave on the same date. Single-occupant roles (Manager, Deputy) are unaffected. Enforced at the leave-creation endpoint with HTTP 422 and rechecked by the validator on every rota.",

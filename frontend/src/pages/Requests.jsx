@@ -54,6 +54,9 @@ export default function Requests() {
     // manager must tick "I understand" + give a reason before the accept
     // is resubmitted with override_conflict=true.
     const [overrideCtx, setOverrideCtx] = useState(null);
+    // Bulk-delete UI — date cutoff for the "Older than" filter on the
+    // request list. Empty string = no filter.
+    const [olderThanCutoff, setOlderThanCutoff] = useState("");
 
     const load = async () => {
         try {
@@ -154,6 +157,36 @@ export default function Requests() {
         const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
     });
 
+    /** Bulk delete selected rows (any tab/status). */
+    const bulkDeleteSelected = async () => {
+        if (selected.size === 0) return;
+        if (!window.confirm(`Delete ${selected.size} request${selected.size === 1 ? "" : "s"}? This can't be undone.`)) return;
+        try {
+            const { data } = await api.post("/requests/bulk-delete", { ids: Array.from(selected) });
+            toast.success(`Deleted ${data?.deleted || 0} request${data?.deleted === 1 ? "" : "s"}`);
+            load();
+        } catch (e) { toast.error(formatApiError(e)); }
+    };
+    /** "Older than" cutoff — count matches client-side, delete via API. */
+    const olderThanCount = useMemo(() => {
+        if (!olderThanCutoff) return 0;
+        return reqs.filter((r) => r.date && r.date < olderThanCutoff).length;
+    }, [reqs, olderThanCutoff]);
+    const selectAllOlderThan = () => {
+        if (!olderThanCutoff) return;
+        setSelected(new Set(reqs.filter((r) => r.date && r.date < olderThanCutoff).map((r) => r.id)));
+    };
+    const bulkDeleteOlderThan = async () => {
+        if (!olderThanCutoff) return;
+        if (!window.confirm(`Delete ALL requests dated before ${olderThanCutoff}? This can't be undone.`)) return;
+        try {
+            const { data } = await api.post("/requests/bulk-delete", { older_than: olderThanCutoff });
+            toast.success(`Deleted ${data?.deleted || 0} request${data?.deleted === 1 ? "" : "s"}`);
+            setOlderThanCutoff("");
+            load();
+        } catch (e) { toast.error(formatApiError(e)); }
+    };
+
     return (
         <div className="space-y-6" data-testid="requests-page">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -178,12 +211,59 @@ export default function Requests() {
                 </TabsList>
             </Tabs>
 
-            {tab === "pending" && selected.size > 0 && (
+            {/* Older-than-date filter — quick way to clean out historic
+                requests without ticking each checkbox. */}
+            <div className="app-card p-3 flex flex-wrap items-end gap-2" data-testid="older-than-bar">
+                <div>
+                    <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Older than</Label>
+                    <Input
+                        type="date"
+                        value={olderThanCutoff}
+                        onChange={(e) => setOlderThanCutoff(e.target.value)}
+                        className="w-44"
+                        data-testid="older-than-date"
+                    />
+                </div>
+                {olderThanCutoff && (
+                    <>
+                        <div className="text-xs text-muted-foreground self-center">
+                            <strong>{olderThanCount}</strong> match{olderThanCount === 1 ? "" : "es"} in current view
+                        </div>
+                        <Button size="sm" variant="outline" onClick={selectAllOlderThan} data-testid="older-than-select-all">
+                            Select matching
+                        </Button>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-destructive border-destructive/40 hover:bg-destructive/10"
+                            onClick={bulkDeleteOlderThan}
+                            data-testid="older-than-delete-all"
+                        >
+                            <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete all matching (server-side)
+                        </Button>
+                    </>
+                )}
+            </div>
+
+            {selected.size > 0 && (
                 <div className="app-card p-3 flex items-center justify-between" data-testid="bulk-bar">
                     <div className="text-sm">{selected.size} selected</div>
-                    <div className="flex gap-2">
-                        <Button size="sm" variant="outline" onClick={() => resolveBulk("rejected")} data-testid="bulk-reject"><XIcon className="w-3.5 h-3.5 mr-1" />Reject</Button>
-                        <Button size="sm" className="btn-primary" onClick={() => resolveBulk("accepted")} data-testid="bulk-accept"><Check className="w-3.5 h-3.5 mr-1" />Accept</Button>
+                    <div className="flex gap-2 flex-wrap">
+                        {tab === "pending" && (
+                            <>
+                                <Button size="sm" variant="outline" onClick={() => resolveBulk("rejected")} data-testid="bulk-reject"><XIcon className="w-3.5 h-3.5 mr-1" />Reject</Button>
+                                <Button size="sm" className="btn-primary" onClick={() => resolveBulk("accepted")} data-testid="bulk-accept"><Check className="w-3.5 h-3.5 mr-1" />Accept</Button>
+                            </>
+                        )}
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-destructive border-destructive/40 hover:bg-destructive/10"
+                            onClick={bulkDeleteSelected}
+                            data-testid="bulk-delete"
+                        >
+                            <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete selected
+                        </Button>
                     </div>
                 </div>
             )}
@@ -192,7 +272,7 @@ export default function Requests() {
                 <Table className="paper-table" data-testid="requests-table">
                     <TableHeader>
                         <TableRow>
-                            {tab === "pending" && <TableHead className="w-[40px]" />}
+                            <TableHead className="w-[40px]" />
                             <TableHead>Staff</TableHead>
                             <TableHead>Date</TableHead>
                             <TableHead>Preference</TableHead>
@@ -204,14 +284,12 @@ export default function Requests() {
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {reqs.length === 0 && <TableRow><TableCell colSpan={tab === "pending" ? 9 : 8} className="text-center py-8 text-sm text-muted-foreground">No requests</TableCell></TableRow>}
+                        {reqs.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-sm text-muted-foreground">No requests</TableCell></TableRow>}
                         {reqs.map((r) => (
                             <TableRow key={r.id} data-testid={`req-row-${r.id}`}>
-                                {tab === "pending" && (
-                                    <TableCell>
-                                        <Checkbox checked={selected.has(r.id)} onCheckedChange={() => toggleSel(r.id)} data-testid={`req-${r.id}-select`} />
-                                    </TableCell>
-                                )}
+                                <TableCell>
+                                    <Checkbox checked={selected.has(r.id)} onCheckedChange={() => toggleSel(r.id)} data-testid={`req-${r.id}-select`} />
+                                </TableCell>
                                 <TableCell className="font-semibold">{r.staff_initials}</TableCell>
                                 <TableCell>{r.date}</TableCell>
                                 <TableCell><Badge variant="outline">{PREFS.find((p) => p.value === r.shift_preference)?.label || r.shift_preference}</Badge></TableCell>

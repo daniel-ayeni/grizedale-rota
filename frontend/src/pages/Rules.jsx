@@ -31,6 +31,7 @@ const RULE_DEFS = [
     { key: "weekend_off_per_rota", name: "Every staff gets ≥1 full weekend off per rota", desc: "Penalty when a staff has NO full (Sat+Sun) weekend OFF / AL / TRN across the rota. Ensures nobody is on shift every single weekend of the 4-week cycle. Staff on AL for the entire rota are exempt." },
     { key: "min_sleepover_per_week_for_seniors", name: "Senior / day staff minimum sleepovers per week", desc: "Listed staff should work ≥ N D* shifts each week (unless on AL/TRN that week). Manager can remove staff from the list or toggle to Hard for strict enforcement.", hasParams: true },
     { key: "max_one_per_role_on_al", name: "Max 1 staff per role on AL same date", desc: "Two staff sharing the same role (e.g. two Flexi or two Night Support) cannot be on annual leave on the same date. Enforced at the leave-creation endpoint. Single-occupant roles unaffected.", immovable: true },
+    { key: "max_staff_on_al_per_week", name: "Max N staff on AL in any single week", desc: "For each Mon-Sun week, no more than N staff may have AL / OFF requests overlapping that week. Default 1. Manager can bump to 2+ for larger teams. Public submit is never blocked — staff sees a red 'Slot taken' banner and the manager makes the call.", hasParams: true },
     { key: "senior_monday_cover", name: "Senior on every Monday", desc: "Each Monday should have at least one of the listed staff (default L.M., L.D.) on a working shift. Soft default with strong weight 60 — flip to Hard for strict enforcement.", hasParams: true },
     { key: "respect_shift_preference", name: "Respect each staff's day/night preference", desc: "Dual-capable staff (can do both day and night) can express a preference on the Staff page. The solver nudges them toward their preferred shift while still using them for the other when needed." },
     { key: "avoid_star_then_night", name: "Avoid `*` followed by `N`", desc: "After a sleepover-only (*) the staff has slept at the home; going straight into a waking night the next day is undesirable. Penalises each (*, N) consecutive pair." },
@@ -391,7 +392,13 @@ export default function Rules() {
                                             setParam={(k, v) => setParam(rd.key, k, v)}
                                         />
                                     )}
-                                    {rd.key !== "overtime_prefer_flexi" && rd.key !== "min_sleepover_per_week_for_seniors" && rd.key !== "senior_monday_cover" && rd.key !== "avoid_star_then_day" && rd.key !== "avoid_star_for_staff" && rd.key !== "max_sleepover_per_week" && rd.key !== "weekday_weekend_split" && rd.key !== "pair_companion_on_day" && rd.key !== "avoid_staff_pairs" && (
+                                    {rd.key === "max_staff_on_al_per_week" && (
+                                        <MaxAlPerWeekParams
+                                            params={r.params || {}}
+                                            setParam={(k, v) => setParam(rd.key, k, v)}
+                                        />
+                                    )}
+                                    {rd.key !== "overtime_prefer_flexi" && rd.key !== "min_sleepover_per_week_for_seniors" && rd.key !== "senior_monday_cover" && rd.key !== "avoid_star_then_day" && rd.key !== "avoid_star_for_staff" && rd.key !== "max_sleepover_per_week" && rd.key !== "weekday_weekend_split" && rd.key !== "pair_companion_on_day" && rd.key !== "avoid_staff_pairs" && rd.key !== "max_staff_on_al_per_week" && (
                                         <div className="grid grid-cols-2 gap-3" data-testid={`rule-${rd.key}-params`}>
                                             <div>
                                                 <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">Preferred staff initials</label>
@@ -1375,3 +1382,34 @@ function AvoidStaffPairsParams({ params, staff, setParam, defaultWeight = 40 }) 
         </div>
     );
 }
+
+/**
+ * MaxAlPerWeekParams — single integer input for `max_count`. The
+ * solver / public slot check / manager-side conflicts column all read
+ * this number to decide when a week is "full" of AL.
+ */
+function MaxAlPerWeekParams({ params, setParam }) {
+    return (
+        <div className="flex items-end gap-2" data-testid="rule-max_staff_on_al_per_week-params">
+            <div className="w-40">
+                <label className="text-[10px] uppercase tracking-wider text-muted-foreground block mb-1">
+                    Max staff on AL per week
+                </label>
+                <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    className="w-full text-sm px-2 py-1.5 rounded border focus-ring"
+                    style={{ borderColor: "hsl(var(--border-strong))", background: "hsl(var(--bg-elev))" }}
+                    value={params.max_count ?? 1}
+                    onChange={(e) => setParam("max_count", Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    data-testid="rule-max_staff_on_al_per_week-max_count"
+                />
+            </div>
+            <div className="text-xs italic text-muted-foreground pb-2">
+                Staff can still submit; manager reviews via the Override dialog.
+            </div>
+        </div>
+    );
+}
+

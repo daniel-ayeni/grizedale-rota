@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 11 — Six-item batch all VERIFIED. 16/16 backend pytest in test_iteration11.py PASS in 54s. solver/test_runner.py reports 30 [OK] (regression guard intact). Frontend smoke across /rules, /requests, /holidays, /rotas, and public /r/{token} (mobile 390px) all confirm the new UI. PostHog/Emergent telemetry fully removed from /app/frontend/public/index.html. PDF export still renders 1 page for the live 4-week rota. No critical issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar footer", "issues": ["Still reads 'Phase 2 · v0.3.0' — cosmetic carry-over from previous iterations."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration11.py",
+    "/app/test_reports/pytest/iteration11_results.xml",
+    "/app/backend/solver/test_runner.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_check_leave_slot (server.py L1898–2073) cleanly delegates the new week-level rule under the existing role-collision check. _week_bounds is Mon-Sun by ISO weekday() — verified for 2026-06-30 → (2026-06-29, 2026-07-05) and 2026-07-08 → (2026-07-06, 2026-07-12).",
+    "_auto_rota_title (L626–641) handles single-month vs. cross-month correctly; explicit titles are preserved via `payload.title or _auto_rota_title(...)`.",
+    "bulk_delete_leave (L1277) and bulk_delete_requests (L1594) both raise 422 on empty payload — verified. Logging line includes operator email.",
+    "Public /api/leave POST takes `dates: [str]` (LeaveBulkIn) — not `date` singular; tests adjusted accordingly.",
+    "frontend/public/index.html is a clean 19-line file: NO posthog, NO emergent telemetry, NO Emergent overlay (verified window.posthog === undefined and 0 emergent overlays on /r/{token} mobile)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration11.py",
+    "/app/test_reports/pytest/iteration11_results.xml",
+    "/app/test_reports/iteration_11.json"
+  ],
+  "success_rate": {
+    "backend": "100% — 16/16 pytest pass; solver test_runner 30/30 [OK]; PDF export 1-page; /api/solver/generate <15s.",
+    "frontend": "100% on tested flows — Rules shows 'Max N staff on AL in any single week'; Rotas table shows END DATE column with '14 Jun 2026' style dates; Holidays shows Select toggle + Range delete; Requests shows OLDER THAN date input + checkbox column on every tab; /r/{token} on mobile (390x844) toggles to Date range with FROM/TO pickers; entering 2026-06-15..19 + clicking 'Add date range' added 5 rows + toast 'Added 5 dates' + per-row green 'Slot is open' banners."
+  },
+  "test_credentials": "manager@grizedale.local / ChangeMe123!",
+  "seed_data_creation": "Inside-test only: AL leave on 2026-07-01 / 2026-08-03..04 / 2026-09-01..03 (cleaned up); 2 short-lived request-tokens (revoked); 3 transient rotas for auto-title verification (deleted in finally blocks); a transient request-token 7jm4MR for browser test (revoked at end). All cleanups confirmed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_iteration11.py -v. The week-level AL conflict tests assume two distinct active staff exist with distinct roles; the helper `staff_pair` picks them automatically. The /api/leave endpoint accepts {staff_initials, dates:[...], type} (LeaveBulkIn) — singular `date` returns 422. Iteration 10's weekend_off_per_rota soft-rule weight tuning concern is a separate, non-regressive item.",
+  "rca_of_the_issue": "N/A — no bugs found. The two initial test failures were test-side (using singular `date` instead of `dates: [...]` on /api/leave); fixed by switching to LeaveBulkIn shape, which is the documented contract."
+}

@@ -45,9 +45,13 @@ export default function RequestLink() {
     const { theme, toggle } = useTheme();
     const [info, setInfo] = useState(undefined);  // undefined=loading, null=invalid
     const [error, setError] = useState(null);
-    // rows: array of {id, date, pref, notes, slot?: {slot_status, reason, existing_leave, would_break_rules}, checking: bool}
+    // rows: array of {id, date, pref, notes, slot?, checking}
     const [rows, setRows] = useState([]);
+    // Add-mode toggle: "single" or "range"
+    const [addMode, setAddMode] = useState("single");
     const [newDate, setNewDate] = useState("");
+    const [rangeFrom, setRangeFrom] = useState("");
+    const [rangeTo, setRangeTo] = useState("");
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
 
@@ -66,9 +70,48 @@ export default function RequestLink() {
     const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
     const expiry = useMemo(() => formatExpiry(info?.valid_until), [info?.valid_until]);
 
+    /** Add a single date row OR a range of dates. Range mode expands
+     *  the inclusive window into one row per date so the rest of the
+     *  flow (slot check, edit pref, edit notes) is unchanged.
+     */
     const addRow = () => {
-        if (!newDate) { toast.error("Pick a date first"); return; }
         if (!window_) return;
+        // Range mode: generate dates from rangeFrom..rangeTo inclusive.
+        if (addMode === "range") {
+            if (!rangeFrom || !rangeTo) { toast.error("Pick both From and To dates"); return; }
+            if (rangeFrom > rangeTo)    { toast.error("From-date must be before to-date"); return; }
+            if (rangeFrom < window_.from || rangeTo > window_.to) {
+                toast.error(`Range must sit between ${window_.from} and ${window_.to}`);
+                return;
+            }
+            const dates = [];
+            const d0 = new Date(rangeFrom + "T00:00:00");
+            const d1 = new Date(rangeTo + "T00:00:00");
+            for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) {
+                dates.push(d.toISOString().slice(0, 10));
+            }
+            const existing = new Set(rows.map((r) => r.date));
+            const newRows = dates
+                .filter((d) => !existing.has(d))
+                .map((d, i) => ({
+                    id: `${d}-${Date.now()}-${i}`, date: d, pref: "OFF", notes: "",
+                    slot: null, checking: false,
+                }));
+            if (newRows.length === 0) {
+                toast.error("All dates in that range are already added");
+                return;
+            }
+            setRows((prev) => [...prev, ...newRows].sort((a, b) => a.date.localeCompare(b.date)));
+            setRangeFrom(""); setRangeTo("");
+            // Run slot check on each freshly added row.
+            newRows.forEach((row, i) => {
+                setTimeout(() => checkSlot(row.id, row.date, row.pref), 100 + i * 60);
+            });
+            toast.success(`Added ${newRows.length} date${newRows.length === 1 ? "" : "s"}`);
+            return;
+        }
+        // Single mode (default).
+        if (!newDate) { toast.error("Pick a date first"); return; }
         if (newDate < window_.from || newDate > window_.to) {
             toast.error(`Date must be between ${window_.from} and ${window_.to}`);
             return;
@@ -207,28 +250,92 @@ export default function RequestLink() {
                     <ExpiryBanner expiry={expiry} />
                 )}
 
-                {/* Date picker + add — single column on mobile */}
+                {/* Date picker — Single date or Date range. Range mode
+                    expands the From/To window into one row per date so
+                    the slot check + per-row preference edit still apply. */}
                 <div className="app-card mt-4 p-3 sm:p-4 flex flex-col gap-3" data-testid="rl-add-card">
-                    <div className="w-full">
-                        <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
-                            Pick a date
-                        </label>
-                        <Input
-                            type="date"
-                            value={newDate}
-                            min={window_?.from || todayIso}
-                            max={window_?.to || "2030-12-31"}
-                            onChange={(e) => setNewDate(e.target.value)}
-                            data-testid="rl-new-date"
-                            className="focus-ring w-full"
-                        />
+                    <div className="flex gap-1.5 text-xs" role="tablist">
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={addMode === "single"}
+                            onClick={() => setAddMode("single")}
+                            className="px-2.5 py-1 rounded-md border focus-ring transition-colors"
+                            style={{
+                                background: addMode === "single" ? "hsl(var(--bg-elev))" : "transparent",
+                                borderColor: "hsl(var(--border-strong))",
+                                color: addMode === "single" ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                            }}
+                            data-testid="rl-mode-single"
+                        >
+                            Single date
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={addMode === "range"}
+                            onClick={() => setAddMode("range")}
+                            className="px-2.5 py-1 rounded-md border focus-ring transition-colors"
+                            style={{
+                                background: addMode === "range" ? "hsl(var(--bg-elev))" : "transparent",
+                                borderColor: "hsl(var(--border-strong))",
+                                color: addMode === "range" ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))",
+                            }}
+                            data-testid="rl-mode-range"
+                        >
+                            Date range
+                        </button>
                     </div>
+                    {addMode === "single" ? (
+                        <div className="w-full">
+                            <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">
+                                Pick a date
+                            </label>
+                            <Input
+                                type="date"
+                                value={newDate}
+                                min={window_?.from || todayIso}
+                                max={window_?.to || "2030-12-31"}
+                                onChange={(e) => setNewDate(e.target.value)}
+                                data-testid="rl-new-date"
+                                className="focus-ring w-full"
+                            />
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
+                            <div>
+                                <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">From</label>
+                                <Input
+                                    type="date"
+                                    value={rangeFrom}
+                                    min={window_?.from || todayIso}
+                                    max={window_?.to || "2030-12-31"}
+                                    onChange={(e) => setRangeFrom(e.target.value)}
+                                    data-testid="rl-range-from"
+                                    className="focus-ring w-full"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs uppercase tracking-wider text-muted-foreground block mb-1">To</label>
+                                <Input
+                                    type="date"
+                                    value={rangeTo}
+                                    min={rangeFrom || window_?.from || todayIso}
+                                    max={window_?.to || "2030-12-31"}
+                                    onChange={(e) => setRangeTo(e.target.value)}
+                                    data-testid="rl-range-to"
+                                    className="focus-ring w-full"
+                                />
+                            </div>
+                        </div>
+                    )}
                     <Button
                         className="btn-primary w-full"
                         onClick={addRow}
                         data-testid="rl-add-row"
                     >
-                        <Plus className="w-4 h-4 mr-1.5" /> Add request
+                        <Plus className="w-4 h-4 mr-1.5" />
+                        {addMode === "range" ? "Add date range" : "Add request"}
                     </Button>
                 </div>
 

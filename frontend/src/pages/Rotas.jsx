@@ -19,6 +19,25 @@ import {
 import { toast } from "sonner";
 import api, { formatApiError } from "@/lib/api";
 
+/** Add `days` to an ISO date string and return a new ISO string.
+ *  Returns "" if the input doesn't parse — keeps the table tolerant
+ *  of partially-migrated rota docs. */
+function addDays(iso, days) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+}
+/** "2026-05-18" → "18 May 2026" — matches the auto-generated rota title
+ *  format so the table reads naturally next to the title column. */
+function formatPrettyDate(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
 export default function Rotas() {
     const navigate = useNavigate();
     const [rotas, setRotas] = useState([]);
@@ -212,6 +231,7 @@ export default function Rotas() {
                         <TableRow>
                             {selectMode && <TableHead style={{ width: 40 }}></TableHead>}
                             <TableHead>Start date</TableHead>
+                            <TableHead>End date</TableHead>
                             <TableHead className="hidden md:table-cell">Title</TableHead>
                             <TableHead>Weeks</TableHead>
                             <TableHead>Status</TableHead>
@@ -220,12 +240,16 @@ export default function Rotas() {
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {loading && <TableRow><TableCell colSpan={selectMode ? 7 : 6} className="text-center py-8 text-sm text-muted-foreground">Loading…</TableCell></TableRow>}
+                        {loading && <TableRow><TableCell colSpan={selectMode ? 8 : 7} className="text-center py-8 text-sm text-muted-foreground">Loading…</TableCell></TableRow>}
                         {!loading && rotas.length === 0 && (
-                            <TableRow><TableCell colSpan={selectMode ? 7 : 6} className="text-center py-8 text-sm text-muted-foreground">No rotas yet — create one to get started.</TableCell></TableRow>
+                            <TableRow><TableCell colSpan={selectMode ? 8 : 7} className="text-center py-8 text-sm text-muted-foreground">No rotas yet — create one to get started.</TableCell></TableRow>
                         )}
                         {rotas.map((r) => {
                             const isPublished = r.status === "published";
+                            // Compute end date dynamically from start + weeks. Cheaper
+                            // than persisting it on the rota doc and stays correct
+                            // across week-count edits. Format as "18 May 2026".
+                            const endDate = formatPrettyDate(addDays(r.start_date, r.weeks * 7 - 1));
                             return (
                                 <TableRow key={r.id} data-testid={`rota-row-${r.id}`}>
                                     {selectMode && (
@@ -242,9 +266,10 @@ export default function Rotas() {
                                     <TableCell className="font-medium">
                                         <span className="inline-flex items-center gap-2">
                                             <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
-                                            {r.start_date}
+                                            {formatPrettyDate(r.start_date)}
                                         </span>
                                     </TableCell>
+                                    <TableCell className="text-sm font-medium tabular-nums">{endDate}</TableCell>
                                     <TableCell className="hidden md:table-cell text-sm">{r.title || "—"}</TableCell>
                                     <TableCell>{r.weeks}</TableCell>
                                     <TableCell>
