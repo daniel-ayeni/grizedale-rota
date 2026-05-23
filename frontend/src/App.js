@@ -18,6 +18,7 @@ import RotaEditor from "@/pages/RotaEditor";
 import Holidays from "@/pages/Holidays";
 import Requests from "@/pages/Requests";
 import RequestLink from "@/pages/RequestLink";
+import SetNewPassword from "@/pages/SetNewPassword";
 
 function App() {
     return (
@@ -28,6 +29,7 @@ function App() {
                         {/* Public — no auth, no Layout */}
                         <Route path="/r/:token" element={<RequestLink />} />
                         <Route path="/login" element={<Login />} />
+                        <Route path="/set-new-password" element={<SetNewPassword />} />
                         {/* Authenticated app shell */}
                         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
                             <Route path="/" element={<Navigate to="/dashboard" replace />} />

@@ -4,6 +4,9 @@ import { Calendar, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+    Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { toast } from "sonner";
@@ -15,6 +18,7 @@ export default function Login() {
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [submitting, setSubmitting] = useState(false);
+    const [forgotOpen, setForgotOpen] = useState(false);
 
     useEffect(() => {
         if (user) navigate("/dashboard", { replace: true });
@@ -24,7 +28,16 @@ export default function Login() {
         e.preventDefault();
         setSubmitting(true);
         try {
-            await login(email, password);
+            const loggedIn = await login(email, password);
+            // If admin reset the password, force the change-password
+            // dialog and pre-fill the temp password so the user only
+            // has to choose a new one. We hand the temp password to
+            // the dialog via location state so it survives the nav.
+            if (loggedIn?.password_must_change) {
+                toast.warning("You must set a new password before continuing");
+                navigate("/set-new-password", { replace: true, state: { tempPassword: password } });
+                return;
+            }
             toast.success("Welcome back");
             navigate("/dashboard", { replace: true });
         } catch (err) {
@@ -99,10 +112,41 @@ export default function Login() {
                     </Button>
                 </form>
 
-                <div className="mt-6 text-xs text-muted-foreground">
+                <div className="mt-4 text-center">
+                    <button
+                        type="button"
+                        onClick={() => setForgotOpen(true)}
+                        className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                        data-testid="login-forgot-link"
+                    >
+                        Forgot password? Contact your manager to reset.
+                    </button>
+                </div>
+
+                <div className="mt-4 text-xs text-muted-foreground">
                     Sign in as manager or admin.
                 </div>
             </div>
+            <ForgotPasswordDialog open={forgotOpen} onOpenChange={setForgotOpen} />
         </div>
+    );
+}
+
+function ForgotPasswordDialog({ open, onOpenChange }) {
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-sm" data-testid="forgot-password-dialog">
+                <DialogHeader>
+                    <DialogTitle>Forgot password</DialogTitle>
+                    <DialogDescription>
+                        Ask your manager or another admin to reset your password from the Admins page.
+                        Once they share a temporary password, log in and you'll be prompted to set a new one.
+                    </DialogDescription>
+                </DialogHeader>
+                <Button onClick={() => onOpenChange(false)} className="btn-primary mt-2" data-testid="forgot-password-ok">
+                    Got it
+                </Button>
+            </DialogContent>
+        </Dialog>
     );
 }

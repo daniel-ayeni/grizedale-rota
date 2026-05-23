@@ -112,6 +112,11 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8)
+
+
 class RegisterIn(BaseModel):
     name: str
     email: str
@@ -283,7 +288,57 @@ async def login(payload: LoginIn):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token(user["id"], user["email"])
     safe = {k: v for k, v in user.items() if k not in {"_id", "password_hash"}}
+    # `password_must_change` is set by an admin reset; the frontend
+    # uses it to force /set-new-password before the user can do anything.
+    safe.setdefault("password_must_change", bool(user.get("password_must_change")))
     return {"token": token, "user": safe}
+
+
+def _validate_new_password(pw: str) -> None:
+    """Enforce the password policy: ≥8 chars with at least one letter
+    AND at least one digit. Raises HTTP 422 on failure. Same policy
+    applies to self-change AND first-login set-new-password flows.
+    """
+    if not pw or len(pw) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    if not any(c.isalpha() for c in pw):
+        raise HTTPException(status_code=422, detail="Password must contain at least one letter")
+    if not any(c.isdigit() for c in pw):
+        raise HTTPException(status_code=422, detail="Password must contain at least one digit")
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePasswordIn, current=Depends(auth_required)):
+    """Authenticated user changes their own password.
+
+    Flow: verify `current_password` against stored hash → enforce policy
+    on `new_password` → rehash + persist → rotate JWT (issue a new one
+    with fresh iat/exp; the old token continues to verify until it
+    expires naturally, by design — we don't keep a JWT blacklist).
+    The frontend reads the rotated token + logs out immediately so the
+    old localStorage copy is wiped.
+    """
+    user = await db.users.find_one({"id": current["id"]})
+    if not user or not verify_password(payload.current_password, user.get("password_hash", "")):
+        # Never reveal whether the user exists vs current pw wrong.
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    _validate_new_password(payload.new_password)
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=422, detail="New password must differ from the current one")
+    new_hash = hash_password(payload.new_password)
+    await db.users.update_one(
+        {"id": current["id"]},
+        {"$set": {
+            "password_hash": new_hash,
+            "password_must_change": False,
+            "password_changed_at": _now(),
+        }},
+    )
+    rotated = create_access_token(current["id"], current["email"])
+    await _log_audit(current.get("email", ""), "password_self_change", {
+        "user_id": current["id"],
+    })
+    return {"success": True, "token": rotated}
 
 
 @api.post("/auth/register")
@@ -567,6 +622,65 @@ async def delete_admin(user_id: str, current=Depends(auth_required)):
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Admin not found")
     return {"success": True}
+
+
+def _generate_temp_password() -> str:
+    """Generate a 12-char cryptographically-random temporary password.
+
+    Layout: 1 symbol + 8 alphanumeric (mixed case + digits) + 3 digits.
+    Always satisfies the standard policy (letter + digit + ≥8 chars).
+    The plaintext leaves the server EXACTLY ONCE — in the response of
+    POST /admins/{id}/reset-password — and is never persisted in plaintext.
+    The actor admin is responsible for the secure hand-off to the
+    target admin in person / over an encrypted channel.
+    """
+    import secrets
+    import string
+    # Curated symbol set — avoids ambiguous shell-quoting characters.
+    sym = secrets.choice("@#$%&*+!")
+    alnum = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+    digits = "".join(secrets.choice(string.digits) for _ in range(3))
+    # Place symbol mid-word so casual eyeballing reads naturally.
+    return f"Temp{sym}{alnum}{digits}"
+
+
+@api.post("/admins/{user_id}/reset-password")
+async def reset_admin_password(user_id: str, current=Depends(auth_required)):
+    """Admin-to-admin password reset. Generates a one-time temp password,
+    flips `password_must_change=true` on the target, and returns the
+    plaintext temp password in the response (never stored / logged in
+    plaintext anywhere). The target admin is forced to /set-new-password
+    on next login. Self-reset rejected with HTTP 400 — use the self
+    change-password flow instead.
+    """
+    if user_id == current["id"]:
+        raise HTTPException(status_code=400, detail="Use Change Password to reset your own password")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    temp_password = _generate_temp_password()
+    new_hash = hash_password(temp_password)
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {
+            "password_hash": new_hash,
+            "password_must_change": True,
+            "password_reset_at": _now(),
+            "password_reset_by": current.get("email", ""),
+        }},
+    )
+    # Audit. Note: NEVER log the plaintext temp password. Only the
+    # target admin, the actor, and the timestamp are recorded.
+    await _log_audit(current.get("email", ""), "admin_password_reset", {
+        "target_admin_id": user_id,
+        "target_admin_email": target.get("email"),
+    })
+    return {
+        "success": True,
+        "temp_password": temp_password,
+        "target_email": target.get("email"),
+        "target_name": target.get("name", ""),
+    }
 
 
 # ============================================================================

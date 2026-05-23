@@ -14,6 +14,7 @@ import {
     CalendarDays,
     Plane,
     Inbox,
+    KeyRound,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 import api from "@/lib/api";
 
 const NAV = [
@@ -45,6 +47,7 @@ export default function Layout() {
     const { theme, toggle } = useTheme();
     const navigate = useNavigate();
     const [homeName, setHomeName] = useState("Grizedale");
+    const [changePwOpen, setChangePwOpen] = useState(false);
 
     useEffect(() => {
         api.get("/settings").then((r) => setHomeName(r.data.home_name || "Grizedale")).catch(() => {});
@@ -145,6 +148,9 @@ export default function Layout() {
                                     <div className="text-xs text-muted-foreground">{user?.email}</div>
                                 </DropdownMenuLabel>
                                 <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={() => setChangePwOpen(true)} data-testid="change-password-trigger">
+                                    <KeyRound className="w-4 h-4 mr-2" /> Change password
+                                </DropdownMenuItem>
                                 <DropdownMenuItem onClick={onLogout} data-testid="logout-button">
                                     <LogOut className="w-4 h-4 mr-2" /> Log out
                                 </DropdownMenuItem>
@@ -173,6 +179,7 @@ export default function Layout() {
                 </main>
             </div>
             <Toaster richColors closeButton />
+            <ChangePasswordDialog open={changePwOpen} onOpenChange={setChangePwOpen} onSuccess={onLogout} />
         </div>
     );
 }
