@@ -60,13 +60,14 @@ async def seed_if_empty(db) -> dict:
     # users
     if await db.users.count_documents({}) == 0:
         admin_email = os.environ.get("ADMIN_EMAIL", "manager@grizedale.local")
-        admin_password = os.environ.get("ADMIN_PASSWORD", "ChangeMe123!")
+        admin_password = os.environ.get("ADMIN_PASSWORD", "changeme123")
         admin = {
             "id": str(uuid.uuid4()),
             "email": admin_email.lower(),
             "name": "Manager (seed)",
             "role": "admin",
             "password_hash": hash_password(admin_password),
+            "password_must_change": False,
             "created_at": _now_iso(),
             "updated_at": _now_iso(),
         }
